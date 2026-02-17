@@ -16,6 +16,8 @@ from typing import Any, List, Optional, Tuple
 from .config import SwarmConfig
 from .watcher import DeadDropMessage, DeadDropWatcher
 
+MAX_CONSOLE_STREAM_CHARS = 12_000
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -77,7 +79,7 @@ class AgentDaemon:
         self.watcher.start()
         self.watcher.register_agent(
             role=self.agent_cfg.role,
-            description=f"claude-swarm daemon agent ({self.agent_cfg.zone})",
+            description=f"minion-swarm daemon agent ({self.agent_cfg.zone})",
             status="online",
         )
 
@@ -168,50 +170,152 @@ class AgentDaemon:
         return True
 
     def _build_prompt(self, message: DeadDropMessage) -> str:
-        sections: List[str] = [self.agent_cfg.system.strip()]
+        max_prompt_chars = self.agent_cfg.max_prompt_chars
+        system_section = self.agent_cfg.system.strip()
+        protocol_section = self._build_protocol_section()
+        rules_section = self._build_rules_section()
+        incoming_section = self._build_incoming_section(message, message.content)
+
+        sections: List[str] = [system_section, protocol_section]
+        used_history = False
 
         if self.inject_history_next_turn and len(self.buffer) > 0:
-            sections.append(
-                "\n".join(
-                    [
-                        "════════════════════ RECENT HISTORY (rolling buffer) ════════════════════",
-                        "The following is your captured stream-json history from before compaction.",
-                        "Use it to restore recent context and avoid redoing completed work.",
-                        "══════════════════════════════════════════════════════════════════════════",
-                        self.buffer.snapshot(),
-                        "═══════════════════════ END RECENT HISTORY ═════════════════════════════",
-                    ]
-                )
-            )
+            history_block = self._build_history_block(self.buffer.snapshot())
+            sections.append(history_block)
+            used_history = True
             self.inject_history_next_turn = False
 
-        sections.append(
-            "\n".join(
-                [
-                    "Autonomous daemon rules:",
-                    "- Do not use AskUserQuestion.",
-                    "- Route questions to lead via dead-drop send.",
-                    "- Execute exactly the incoming task.",
-                    "- Send one summary message when done.",
-                ]
+        sections.extend([rules_section, incoming_section])
+        prompt = "\n\n".join(s for s in sections if s.strip())
+        if len(prompt) <= max_prompt_chars:
+            return prompt
+
+        # First shrink/remove injected history; keep system + rules + incoming task intact.
+        if used_history:
+            base_without_history = "\n\n".join([system_section, protocol_section, rules_section, incoming_section])
+            history_budget = max_prompt_chars - len(base_without_history) - len(self._build_history_block(""))
+
+            if history_budget > 0:
+                trimmed_snapshot = self._truncate_tail(
+                    self.buffer.snapshot(),
+                    history_budget,
+                    "[history truncated to fit prompt budget]\n",
+                )
+                trimmed_history = self._build_history_block(trimmed_snapshot)
+                prompt = "\n\n".join([system_section, protocol_section, trimmed_history, rules_section, incoming_section])
+                if len(prompt) <= max_prompt_chars:
+                    self._log(
+                        f"trimmed injected history for prompt budget ({len(prompt)}/{max_prompt_chars} chars)"
+                    )
+                    return prompt
+
+            prompt = "\n\n".join([system_section, protocol_section, rules_section, incoming_section])
+            self._log("dropped injected history block due to prompt budget pressure")
+            if len(prompt) <= max_prompt_chars:
+                return prompt
+
+        # Last resort: trim only the message content body, preserving metadata and rules.
+        incoming_empty = self._build_incoming_section(message, "")
+        base_no_content = "\n\n".join([system_section, protocol_section, rules_section, incoming_empty])
+        content_budget = max_prompt_chars - len(base_no_content)
+        if content_budget < 0:
+            content_budget = 0
+
+        trimmed_content = self._truncate_tail(
+            message.content,
+            content_budget,
+            "[message truncated to fit prompt budget]\n",
+        )
+        prompt = "\n\n".join(
+            [system_section, protocol_section, rules_section, self._build_incoming_section(message, trimmed_content)]
+        )
+        if len(prompt) > max_prompt_chars:
+            prompt = prompt[:max_prompt_chars]
+            self._log("hard-truncated prompt to max_prompt_chars as final safety guard")
+        else:
+            self._log(
+                f"trimmed incoming message content for prompt budget ({len(prompt)}/{max_prompt_chars} chars)"
             )
+
+        return prompt
+
+    def _build_history_block(self, history_snapshot: str) -> str:
+        return "\n".join(
+            [
+                "════════════════════ RECENT HISTORY (rolling buffer) ════════════════════",
+                "The following is your captured stream-json history from before compaction.",
+                "Use it to restore recent context and avoid redoing completed work.",
+                "══════════════════════════════════════════════════════════════════════════",
+                history_snapshot,
+                "═══════════════════════ END RECENT HISTORY ═════════════════════════════",
+            ]
         )
 
-        sections.append(
-            "\n".join(
+    def _build_rules_section(self) -> str:
+        lines = [
+            "Autonomous daemon rules:",
+            "- Do not use AskUserQuestion.",
+            "- Route questions to lead via dead-drop send.",
+            "- Execute exactly the incoming task.",
+            "- Send one summary message when done.",
+            "- Task governance: lead manages task queue and assignment ownership.",
+            "- No delegation without a written task file: `.dead-drop/tasks/<TASK-ID>/task.md` must exist first.",
+        ]
+
+        if self.agent_cfg.role == "lead":
+            lines.extend(
                 [
-                    "Incoming dead-drop message:",
-                    f"- id: {message.id}",
-                    f"- from: {message.from_agent}",
-                    f"- timestamp: {message.timestamp}",
-                    f"- broadcast: {message.is_broadcast}",
-                    "",
-                    message.content,
+                    "- As lead: create and maintain task templates (task.md/status/assigned).",
+                    "- As lead: define scope and acceptance criteria.",
+                    "- As lead: ask domain owners to update technical details based on direct work.",
+                    "- As lead: capture new ideas in `.dead-drop/BACKLOG.md` before delegating.",
+                    "- As lead: after a task completes, review backlog and assign the next written task.",
                 ]
             )
+        else:
+            lines.extend(
+                [
+                    "- Non-lead agents: do not rewrite full task templates owned by lead.",
+                    "- Non-lead agents: update technical details/results only where you have direct evidence.",
+                    "- If task structure should change, send recommendation to lead.",
+                    "- If you discover new ideas, send them to lead for backlog entry.",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    def _build_protocol_section(self) -> str:
+        return "\n".join(
+            [
+                "Mandatory pre-task protocol (all agents):",
+                "- Re-read the dead-drop protocol from your MCP onboarding/register output.",
+                "- Re-read `.dead-drop/debug-protocol.md` before starting task execution.",
+                "- Re-read `.dead-drop/BACKLOG.md` for current task and status context.",
+            ]
         )
 
-        return "\n\n".join(s for s in sections if s.strip())
+    def _build_incoming_section(self, message: DeadDropMessage, content: str) -> str:
+        return "\n".join(
+            [
+                "Incoming dead-drop message:",
+                f"- id: {message.id}",
+                f"- from: {message.from_agent}",
+                f"- timestamp: {message.timestamp}",
+                f"- broadcast: {message.is_broadcast}",
+                "",
+                content,
+            ]
+        )
+
+    def _truncate_tail(self, text: str, max_chars: int, prefix: str) -> str:
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if len(prefix) >= max_chars:
+            return prefix[:max_chars]
+        keep = max_chars - len(prefix)
+        return f"{prefix}{text[-keep:]}"
 
     def _run_agent(self, prompt: str) -> AgentRunResult:
         provider = self.agent_cfg.provider
@@ -294,6 +398,7 @@ class AgentDaemon:
 
     def _run_command(self, cmd: List[str]) -> AgentRunResult:
         self._log(f"exec: {cmd[0]} ({self.agent_cfg.provider})")
+        self._print_stream_start(cmd[0])
 
         try:
             proc = subprocess.Popen(
@@ -335,6 +440,8 @@ class AgentDaemon:
         timed_out = False
         compaction_detected = False
         last_output_at = time.monotonic()
+        displayed_chars = 0
+        hidden_chars = 0
 
         while True:
             try:
@@ -355,7 +462,14 @@ class AgentDaemon:
             self.buffer.append(line)
             rendered, has_compaction = self._render_stream_line(line)
             if rendered:
-                print(rendered, end="", flush=True)
+                remaining = MAX_CONSOLE_STREAM_CHARS - displayed_chars
+                if remaining > 0:
+                    chunk = rendered[:remaining]
+                    print(chunk, end="", flush=True)
+                    displayed_chars += len(chunk)
+                else:
+                    chunk = ""
+                hidden_chars += len(rendered) - len(chunk)
             if has_compaction:
                 compaction_detected = True
 
@@ -371,6 +485,7 @@ class AgentDaemon:
             proc.kill()
             exit_code = proc.wait(timeout=5)
 
+        self._print_stream_end(cmd[0], displayed_chars=displayed_chars, hidden_chars=hidden_chars)
         return AgentRunResult(
             exit_code=exit_code,
             timed_out=timed_out,
@@ -436,10 +551,24 @@ class AgentDaemon:
         )
         return any(marker in low for marker in markers)
 
+    def _print_stream_start(self, command_name: str) -> None:
+        print(
+            f"\n=== model-stream start: agent={self.agent_name} cmd={command_name} ===",
+            flush=True,
+        )
+
+    def _print_stream_end(self, command_name: str, displayed_chars: int, hidden_chars: int) -> None:
+        if hidden_chars > 0:
+            print(f"\n[model-stream abbreviated: {hidden_chars} chars hidden]", flush=True)
+        print(
+            f"=== model-stream end: agent={self.agent_name} cmd={command_name} shown={displayed_chars} chars ===",
+            flush=True,
+        )
+
     def _alert_lead(self) -> None:
         lead = self.watcher.find_lead_agent() or "lead"
         content = (
-            f"claude-swarm alert: agent {self.agent_name} has {self.consecutive_failures} "
+            f"minion-swarm alert: agent {self.agent_name} has {self.consecutive_failures} "
             f"consecutive failures. Last error: {self.last_error or 'unknown'}."
         )
         try:

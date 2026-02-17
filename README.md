@@ -1,70 +1,110 @@
-# claude-swarm
+# minion-swarm
 
 Autonomous multi-agent daemon runner coordinated through dead-drop.
-Supported providers: `claude`, `codex`, `opencode`, `gemini`.
+
+Supported providers:
+- `claude`
+- `codex`
+- `opencode`
+- `gemini`
 
 ## Install
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Configure
+Clone-based install:
 
 ```bash
-cp claude-swarm.yaml.example claude-swarm.yaml
-# edit values for your project and agents
+git clone https://github.com/ai-janitor/minion-swarm.git
+cd minion-swarm
+./install.sh
 ```
 
-Each agent can choose a provider:
+Curl bootstrap install:
 
-```yaml
-agents:
-  opus-engineer:
-    provider: claude
-  codex:
-    provider: codex
-  opencode-helper:
-    provider: opencode
-  gemini-helper:
-    provider: gemini
+```bash
+curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/bootstrap.sh | bash
 ```
 
-Provider command mapping:
-- `claude`: `claude -p ... --output-format stream-json --continue`
-- `codex`: `codex exec --json ...` and resume via `codex exec resume --last --json ...`
-- `opencode`: `opencode run --format json ...` and resume via `opencode run --continue --format json ...`
-- `gemini`: `gemini --prompt ... --output-format stream-json` and resume via `gemini --resume latest --prompt ... --output-format stream-json`
+Optional explicit target repo:
 
-For Claude agents, you can set:
-- `allowed_tools`: pass-through to `claude --allowed-tools`
-- `permission_mode`: pass-through to `claude --permission-mode` (for autonomous daemons, `bypassPermissions` avoids interactive permission blocks)
+```bash
+./install.sh --project-dir /path/to/your/repo
+# or
+curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/bootstrap.sh | bash -s -- --project-dir /path/to/your/repo
+```
+
+Config overwrite behavior:
+- If config already exists, installer prompts before overwrite.
+- Use `--overwrite-config` for non-interactive replacement.
+
+Notes:
+- `install.sh` is the single setup/patch path.
+- `--project-dir` is optional.
+- If omitted, installer keeps existing config `project_dir` or defaults to current shell directory.
+
+What install does:
+- creates `./.venv` and installs dependencies (if missing)
+- creates or patches config at `~/.minion-swarm/minion-swarm.yaml`
+- patches config defaults (`project_dir`, dead-drop paths, required prompt lines)
+- links launchers to `~/.local/bin` (unless `--no-symlink`)
+
+Seed config sources (if target config does not exist):
+- `./minion-swarm.yaml`
+- `~/.minion-swarm/minion-swarm.yaml`
+- `./minion-swarm.yaml.example`
 
 ## Run
 
-```bash
-python -m claude_swarm.cli start
-python -m claude_swarm.cli status
-python -m claude_swarm.cli logs opus-engineer
-python -m claude_swarm.cli send opus-engineer "Do PERF-015"
-python -m claude_swarm.cli stop
-```
-
-Runtime state is written under `.claude-swarm/` in the configured `project_dir`.
-
-## One Command Runner
+Run swarm against the repo you are currently in:
 
 ```bash
-./run-agent.sh
+cd /path/to/repo
+run-minion swarm-lead
 ```
 
-Defaults to `opus-engineer` and `./claude-swarm.yaml`.
+If `run-minion` is not on your PATH, use:
 
 ```bash
-./run-agent.sh <agent-name> <config-path>
+/path/to/minion-swarm/run-minion.sh swarm-lead
 ```
 
-Press `Ctrl+C` to stop and clean up that agent.
-Set `LEAVE_RUNNING=1` to exit logs without stopping the agent.
+Daemon controls:
+
+```bash
+minion-swarm start swarm-lead
+minion-swarm status
+minion-swarm logs swarm-lead --lines 0
+minion-swarm stop swarm-lead
+```
+
+## One Agent Runner
+
+```bash
+./run-minion.sh swarm-lead
+```
+
+`run-minion.sh` always calls `install.sh --no-symlink` first, so all setup/patching is centralized in the installer.
+
+Optional explicit args:
+
+```bash
+./run-minion.sh <agent-name> <config-path> <project-dir>
+```
+
+Compatibility:
+- `run-agent.sh` still works and forwards to `run-minion.sh`.
+
+## Config
+
+Example file: `minion-swarm.yaml.example`
+
+Primary config location:
+- `~/.minion-swarm/minion-swarm.yaml`
+
+Environment override:
+- `MINION_SWARM_CONFIG=/path/to/file.yaml`
+
+For Claude agents:
+- `allowed_tools` maps to `claude --allowed-tools`
+- `permission_mode` maps to `claude --permission-mode`
+
+Runtime state is written under `.minion-swarm/` in each configured `project_dir`.

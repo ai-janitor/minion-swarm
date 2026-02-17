@@ -21,6 +21,7 @@ class AgentConfig:
     permission_mode: Optional[str]
     model: Optional[str]
     max_history_tokens: int
+    max_prompt_chars: int
     no_output_timeout_sec: int
     retry_backoff_sec: int
     retry_backoff_max_sec: int
@@ -36,7 +37,7 @@ class SwarmConfig:
 
     @property
     def runtime_dir(self) -> Path:
-        return self.project_dir / ".claude-swarm"
+        return self.project_dir / ".minion-swarm"
 
     @property
     def logs_dir(self) -> Path:
@@ -99,7 +100,7 @@ def load_config(config_path: str | Path) -> SwarmConfig:
         system = str(item.get("system", "")).strip()
         if not system:
             system = (
-                f"You are {name} ({role}) running under claude-swarm. "
+                f"You are {name} ({role}) running under minion-swarm. "
                 "Check dead-drop inbox, execute tasks, and report via dead-drop."
             )
 
@@ -118,6 +119,7 @@ def load_config(config_path: str | Path) -> SwarmConfig:
             model = str(model)
 
         max_history_tokens = int(item.get("max_history_tokens", 100_000))
+        max_prompt_chars = int(item.get("max_prompt_chars", 120_000))
         no_output_timeout_sec = int(item.get("no_output_timeout_sec", 600))
         retry_backoff_sec = int(item.get("retry_backoff_sec", 30))
         retry_backoff_max_sec = int(item.get("retry_backoff_max_sec", 300))
@@ -132,6 +134,7 @@ def load_config(config_path: str | Path) -> SwarmConfig:
             permission_mode=permission_mode,
             model=model,
             max_history_tokens=max_history_tokens,
+            max_prompt_chars=max_prompt_chars,
             no_output_timeout_sec=no_output_timeout_sec,
             retry_backoff_sec=retry_backoff_sec,
             retry_backoff_max_sec=retry_backoff_max_sec,

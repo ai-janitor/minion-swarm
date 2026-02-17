@@ -1,4 +1,4 @@
-# claude-swarm
+# minion-swarm
 
 Autonomous multi-agent daemon that runs Claude Code agents as background processes, coordinated through dead-drop MCP messaging.
 
@@ -82,7 +82,7 @@ IDLE (watching filesystem)
 Each agent is defined in a YAML config:
 
 ```yaml
-# claude-swarm.yaml
+# minion-swarm.yaml
 dead_drop_dir: .dead-drop
 project_dir: /Users/hung/projects/TTS.cpp
 
@@ -119,25 +119,25 @@ agents:
 
 ```bash
 # Start all agents
-claude-swarm start
+minion-swarm start
 
 # Start one agent
-claude-swarm start opus-engineer
+minion-swarm start opus-engineer
 
 # Stop all agents
-claude-swarm stop
+minion-swarm stop
 
 # Stop one agent
-claude-swarm stop opus-engineer
+minion-swarm stop opus-engineer
 
 # Show agent status (PID, current task, last message)
-claude-swarm status
+minion-swarm status
 
 # Tail an agent's live output
-claude-swarm logs opus-engineer
+minion-swarm logs opus-engineer
 
 # Send a message as lead
-claude-swarm send opus-engineer "Do PERF-015"
+minion-swarm send opus-engineer "Do PERF-015"
 ```
 
 ## Key Implementation Details
@@ -150,9 +150,9 @@ claude-swarm send opus-engineer "Do PERF-015"
 
 ### Process Management
 - Each agent runs as a subprocess: `claude -p "<system + task>" --continue`
-- Daemon captures stdout/stderr and logs to `.claude-swarm/logs/<agent>.log`
-- Also tees to terminal when `claude-swarm logs <agent>` is running
-- PID file in `.claude-swarm/pids/<agent>.pid`
+- Daemon captures stdout/stderr and logs to `.minion-swarm/logs/<agent>.log`
+- Also tees to terminal when `minion-swarm logs <agent>` is running
+- PID file in `.minion-swarm/pids/<agent>.pid`
 - Graceful shutdown: SIGTERM → wait for claude process to finish → exit
 
 ### Context Management (Sliding Window)
@@ -194,27 +194,27 @@ Agents MUST NOT use `AskUserQuestion` — it blocks waiting for terminal input, 
 
 ### MCP Server Lifecycle
 - The dead-drop MCP server must be running before agents start
-- `claude-swarm start` checks for MCP server, starts it if needed
+- `minion-swarm start` checks for MCP server, starts it if needed
 - MCP config must be in the project's `.claude/settings.json`
 
 ## File Structure
 
 ```
-claude-swarm/
-  claude_swarm/
+minion-swarm/
+  minion_swarm/
     __init__.py
     cli.py          # click CLI (start, stop, status, logs, send)
     daemon.py       # agent daemon (watch + invoke claude -p)
     watcher.py      # filesystem watcher for dead-drop messages
     config.py       # YAML config loader
-  claude-swarm.yaml.example
+  minion-swarm.yaml.example
   requirements.txt  # click, watchdog, pyyaml
   README.md
 ```
 
 ## Open Questions
 
-1. **tmux/screen integration?** — Instead of separate terminals, auto-create a tmux session with one pane per agent? `claude-swarm start --tmux` could set this up.
+1. **tmux/screen integration?** — Instead of separate terminals, auto-create a tmux session with one pane per agent? `minion-swarm start --tmux` could set this up.
 
 2. **Cost tracking** — Each `claude -p` call has a cost. Should we track cumulative spend per agent and enforce budgets?
 

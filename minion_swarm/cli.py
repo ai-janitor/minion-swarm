@@ -16,6 +16,10 @@ from .config import SwarmConfig, load_config
 from .daemon import AgentDaemon
 from .watcher import DeadDropWatcher
 
+DEFAULT_CONFIG_PATH = str(
+    Path(os.environ.get("MINION_SWARM_CONFIG", "~/.minion-swarm/minion-swarm.yaml")).expanduser()
+)
+
 
 def _daemon_env() -> dict:
     env = os.environ.copy()
@@ -67,12 +71,12 @@ def _normalize_targets(cfg: SwarmConfig, maybe_agent: Optional[str]) -> List[str
 
 @click.group()
 def cli() -> None:
-    """claude-swarm daemon CLI."""
+    """minion-swarm daemon CLI."""
 
 
 @cli.command(name="start")
 @click.argument("agent", required=False)
-@click.option("--config", "config_path", default="claude-swarm.yaml", show_default=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
 def start_cmd(agent: Optional[str], config_path: str) -> None:
     """Start one agent (or all agents)."""
     cfg = load_config(config_path)
@@ -92,7 +96,7 @@ def start_cmd(agent: Optional[str], config_path: str) -> None:
         cmd = [
             sys.executable,
             "-m",
-            "claude_swarm.cli",
+            "minion_swarm.cli",
             "_run-agent",
             "--config",
             str(cfg.config_path),
@@ -117,7 +121,7 @@ def start_cmd(agent: Optional[str], config_path: str) -> None:
 
 @cli.command(name="stop")
 @click.argument("agent", required=False)
-@click.option("--config", "config_path", default="claude-swarm.yaml", show_default=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
 def stop_cmd(agent: Optional[str], config_path: str) -> None:
     """Stop one agent (or all agents)."""
     cfg = load_config(config_path)
@@ -152,7 +156,7 @@ def stop_cmd(agent: Optional[str], config_path: str) -> None:
 
 
 @cli.command(name="status")
-@click.option("--config", "config_path", default="claude-swarm.yaml", show_default=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
 def status_cmd(config_path: str) -> None:
     """Show daemon status for all configured agents."""
     cfg = load_config(config_path)
@@ -179,7 +183,7 @@ def status_cmd(config_path: str) -> None:
 
 @cli.command(name="logs")
 @click.argument("agent")
-@click.option("--config", "config_path", default="claude-swarm.yaml", show_default=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
 @click.option("--lines", default=80, show_default=True, type=int)
 @click.option("--follow/--no-follow", default=True, show_default=True)
 def logs_cmd(agent: str, config_path: str, lines: int, follow: bool) -> None:
@@ -212,7 +216,7 @@ def logs_cmd(agent: str, config_path: str, lines: int, follow: bool) -> None:
 @cli.command(name="send")
 @click.argument("to_agent")
 @click.argument("message", nargs=-1, required=True)
-@click.option("--config", "config_path", default="claude-swarm.yaml", show_default=True)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
 @click.option("--from-agent", default="lead", show_default=True)
 @click.option("--cc", default=None)
 def send_cmd(to_agent: str, message: Iterable[str], config_path: str, from_agent: str, cc: Optional[str]) -> None:
