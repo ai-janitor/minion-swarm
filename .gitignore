@@ -1,0 +1,12 @@
+.venv/
+.dead-drop/
+.claude-swarm/
+
+__pycache__/
+*.py[cod]
+
+# Local runtime config (keep example tracked)
+claude-swarm.yaml
+
+# OS noise
+.DS_Store
