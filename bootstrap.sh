@@ -104,6 +104,22 @@ fi
 info "Running install.sh..."
 "${INSTALL_DIR}/install.sh" "${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}"
 
+# ── Step 3: Check PATH ───────────────────────────────────────────────────────
+
+if ! command -v minion-swarm &>/dev/null || ! command -v run-minion &>/dev/null; then
+  warn "minion-swarm/run-minion not found on PATH."
+  echo ""
+  warn "Add this to your shell config and restart your terminal:"
+  if [[ "${SHELL:-}" == */zsh ]]; then
+    warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+  elif [[ "${SHELL:-}" == */bash ]]; then
+    warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+  else
+    warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile"
+  fi
+  echo ""
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
