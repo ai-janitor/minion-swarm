@@ -7,7 +7,8 @@ while [[ -L "${SOURCE_PATH}" ]]; do
   SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
   [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
 done
-ROOT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+ROOT_DIR="$(cd -P "${SCRIPT_DIR}/.." && pwd)"
 INVOKE_DIR="$(pwd)"
 cd "${ROOT_DIR}"
 
@@ -16,7 +17,7 @@ CONFIG_PATH="${2:-${MINION_SWARM_CONFIG:-${HOME}/.minion-swarm/minion-swarm.yaml
 PROJECT_DIR="${3:-${MINION_SWARM_PROJECT_DIR:-${INVOKE_DIR}}}"
 VENV_PY="${ROOT_DIR}/.venv/bin/python3"
 
-"${ROOT_DIR}/install.sh" --project-dir "${PROJECT_DIR}" --config "${CONFIG_PATH}" --no-symlink >/dev/null
+"${SCRIPT_DIR}/install.sh" --project-dir "${PROJECT_DIR}" --config "${CONFIG_PATH}" --no-symlink >/dev/null
 
 if [[ ! -x "${VENV_PY}" ]]; then
   echo "Error: virtualenv missing after install bootstrap: ${VENV_PY}" >&2

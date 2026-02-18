@@ -15,21 +15,21 @@ Clone-based install:
 ```bash
 git clone https://github.com/ai-janitor/minion-swarm.git
 cd minion-swarm
-./install.sh
+./scripts/install.sh
 ```
 
 Curl bootstrap install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/bootstrap.sh | bash
 ```
 
 Optional explicit target repo:
 
 ```bash
-./install.sh --project-dir /path/to/your/repo
+./scripts/install.sh --project-dir /path/to/your/repo
 # or
-curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/bootstrap.sh | bash -s -- --project-dir /path/to/your/repo
+curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/bootstrap.sh | bash -s -- --project-dir /path/to/your/repo
 ```
 
 Config overwrite behavior:
@@ -37,7 +37,7 @@ Config overwrite behavior:
 - Use `--overwrite-config` for non-interactive replacement.
 
 Notes:
-- `install.sh` is the single setup/patch path.
+- `scripts/install.sh` is the single setup/patch path.
 - `--project-dir` is optional.
 - If omitted, installer keeps existing config `project_dir` or defaults to current shell directory.
 
@@ -64,7 +64,7 @@ run-minion swarm-lead
 If `run-minion` is not on your PATH, use:
 
 ```bash
-/path/to/minion-swarm/run-minion.sh swarm-lead
+/path/to/minion-swarm/scripts/run-minion.sh swarm-lead
 ```
 
 Daemon controls:
@@ -79,19 +79,19 @@ minion-swarm stop swarm-lead
 ## One Agent Runner
 
 ```bash
-./run-minion.sh swarm-lead
+./scripts/run-minion.sh swarm-lead
 ```
 
-`run-minion.sh` always calls `install.sh --no-symlink` first, so all setup/patching is centralized in the installer.
+`scripts/run-minion.sh` always calls `scripts/install.sh --no-symlink` first, so all setup/patching is centralized in the installer.
 
 Optional explicit args:
 
 ```bash
-./run-minion.sh <agent-name> <config-path> <project-dir>
+./scripts/run-minion.sh <agent-name> <config-path> <project-dir>
 ```
 
 Compatibility:
-- `run-agent.sh` still works and forwards to `run-minion.sh`.
+- `scripts/run-agent.sh` still works and forwards to `scripts/run-minion.sh`.
 
 ## Config
 

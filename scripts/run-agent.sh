@@ -7,5 +7,5 @@ while [[ -L "${SOURCE_PATH}" ]]; do
   SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
   [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
 done
-ROOT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
-exec "${ROOT_DIR}/run-minion.sh" "$@"
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+exec "${SCRIPT_DIR}/run-minion.sh" "$@"

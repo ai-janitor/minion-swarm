@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # minion-swarm bootstrap installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/bootstrap.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/bootstrap.sh | bash
 #    or: curl -fsSL ... | bash -s -- --project-dir /path/to/repo
 
 REPO_URL="${MINION_SWARM_REPO_URL:-https://github.com/ai-janitor/minion-swarm.git}"
@@ -102,7 +102,7 @@ fi
 # ── Step 2: Run installer ───────────────────────────────────────────────────
 
 info "Running install.sh..."
-"${INSTALL_DIR}/install.sh" "${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}"
+"${INSTALL_DIR}/scripts/install.sh" "${INSTALL_ARGS[@]+"${INSTALL_ARGS[@]}"}"
 
 # ── Step 3: Check PATH ───────────────────────────────────────────────────────
 

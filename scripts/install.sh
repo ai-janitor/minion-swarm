@@ -7,11 +7,12 @@ while [[ -L "${SOURCE_PATH}" ]]; do
   SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
   [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
 done
-ROOT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
+ROOT_DIR="$(cd -P "${SCRIPT_DIR}/.." && pwd)"
 
 if [[ ! -f "${ROOT_DIR}/requirements.txt" ]] || [[ ! -f "${ROOT_DIR}/minion-swarm.yaml.example" ]]; then
   echo "Error: install.sh must be run from a checked-out minion-swarm repo." >&2
-  echo "Clone first, then run ./install.sh from that clone." >&2
+  echo "Clone first, then run ./scripts/install.sh from that clone." >&2
   exit 2
 fi
 
@@ -228,7 +229,7 @@ if [[ "${CREATE_SYMLINK}" -eq 1 ]]; then
   BIN_DIR="${HOME}/.local/bin"
   mkdir -p "${BIN_DIR}"
   ln -sf "${ROOT_DIR}/minion-swarm" "${BIN_DIR}/minion-swarm"
-  ln -sf "${ROOT_DIR}/run-minion.sh" "${BIN_DIR}/run-minion"
+  ln -sf "${ROOT_DIR}/scripts/run-minion.sh" "${BIN_DIR}/run-minion"
 fi
 
 echo ""
@@ -239,4 +240,4 @@ echo "Run from your target repo:"
 echo "  cd /path/to/repo && run-minion swarm-lead"
 echo ""
 echo "If ~/.local/bin is not on PATH, use:"
-echo "  ${ROOT_DIR}/run-minion.sh swarm-lead"
+echo "  ${ROOT_DIR}/scripts/run-minion.sh swarm-lead"
