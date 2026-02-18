@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SOURCE_PATH="${BASH_SOURCE[0]}"
-while [[ -L "${SOURCE_PATH}" ]]; do
-  SOURCE_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
-  SOURCE_PATH="$(readlink "${SOURCE_PATH}")"
-  [[ "${SOURCE_PATH}" != /* ]] && SOURCE_PATH="${SOURCE_DIR}/${SOURCE_PATH}"
-done
-SCRIPT_DIR="$(cd -P "$(dirname "${SOURCE_PATH}")" && pwd)"
-exec "${SCRIPT_DIR}/run-minion.sh" "$@"
+# Backward-compatible alias for run-minion.
+exec run-minion "$@"

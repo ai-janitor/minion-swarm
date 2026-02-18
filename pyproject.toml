@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "minion-swarm"
+version = "0.1.0"
+description = "Autonomous multi-agent daemon runner coordinated through dead-drop"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1.0",
+    "PyYAML>=6.0",
+    "watchdog>=4.0.0",
+]
+
+[project.scripts]
+minion-swarm = "minion_swarm.cli:main"
+run-minion = "minion_swarm.cli:run_minion_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["minion_swarm"]

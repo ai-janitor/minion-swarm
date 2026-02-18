@@ -10,47 +10,27 @@ Supported providers:
 
 ## Install
 
-Clone-based install:
-
 ```bash
-git clone https://github.com/ai-janitor/minion-swarm.git
-cd minion-swarm
-./scripts/install.sh
+curl -sSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/install.sh | bash
 ```
 
-Curl bootstrap install:
+Or install directly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/bootstrap.sh | bash
+pipx install git+https://github.com/ai-janitor/minion-swarm.git
+minion-swarm init
 ```
 
-Optional explicit target repo:
+Initialize with a specific project directory:
 
 ```bash
-./scripts/install.sh --project-dir /path/to/your/repo
-# or
-curl -fsSL https://raw.githubusercontent.com/ai-janitor/minion-swarm/main/scripts/bootstrap.sh | bash -s -- --project-dir /path/to/your/repo
+minion-swarm init --project-dir /path/to/your/repo
 ```
-
-Config overwrite behavior:
-- If config already exists, installer prompts before overwrite.
-- Use `--overwrite-config` for non-interactive replacement.
-
-Notes:
-- `scripts/install.sh` is the single setup/patch path.
-- `--project-dir` is optional.
-- If omitted, installer keeps existing config `project_dir` or defaults to current shell directory.
 
 What install does:
-- creates `./.venv` and installs dependencies (if missing)
-- creates or patches config at `~/.minion-swarm/minion-swarm.yaml`
+- installs `minion-swarm` and `run-minion` commands via pipx/pip
+- seeds config at `~/.minion-swarm/minion-swarm.yaml` from bundled example
 - patches config defaults (`project_dir`, dead-drop paths, required prompt lines)
-- links launchers to `~/.local/bin` (unless `--no-symlink`)
-
-Seed config sources (if target config does not exist):
-- `./minion-swarm.yaml`
-- `~/.minion-swarm/minion-swarm.yaml`
-- `./minion-swarm.yaml.example`
 
 ## Run
 
@@ -59,12 +39,6 @@ Run swarm against the repo you are currently in:
 ```bash
 cd /path/to/repo
 run-minion swarm-lead
-```
-
-If `run-minion` is not on your PATH, use:
-
-```bash
-/path/to/minion-swarm/scripts/run-minion.sh swarm-lead
 ```
 
 Daemon controls:
@@ -79,23 +53,20 @@ minion-swarm stop swarm-lead
 ## One Agent Runner
 
 ```bash
-./scripts/run-minion.sh swarm-lead
+run-minion swarm-lead
 ```
 
-`scripts/run-minion.sh` always calls `scripts/install.sh --no-symlink` first, so all setup/patching is centralized in the installer.
+`run-minion` calls `minion-swarm init` first, so config is always seeded and patched.
 
 Optional explicit args:
 
 ```bash
-./scripts/run-minion.sh <agent-name> <config-path> <project-dir>
+run-minion <agent-name> <config-path> <project-dir>
 ```
-
-Compatibility:
-- `scripts/run-agent.sh` still works and forwards to `scripts/run-minion.sh`.
 
 ## Config
 
-Example file: `minion-swarm.yaml.example`
+Example file: `minion_swarm/data/minion-swarm.yaml.example`
 
 Primary config location:
 - `~/.minion-swarm/minion-swarm.yaml`

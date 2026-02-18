@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -11,10 +12,13 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 import click
+import yaml
 
 from .config import SwarmConfig, load_config
 from .daemon import AgentDaemon
 from .watcher import DeadDropWatcher
+
+DATA_DIR = Path(__file__).resolve().parent / "data"
 
 DEFAULT_CONFIG_PATH = str(
     Path(os.environ.get("MINION_SWARM_CONFIG", "~/.minion-swarm/minion-swarm.yaml")).expanduser()
@@ -22,14 +26,8 @@ DEFAULT_CONFIG_PATH = str(
 
 
 def _daemon_env() -> dict:
-    env = os.environ.copy()
-    package_root = str(Path(__file__).resolve().parents[1])
-    existing = env.get("PYTHONPATH", "").strip()
-    if existing:
-        env["PYTHONPATH"] = f"{package_root}{os.pathsep}{existing}"
-    else:
-        env["PYTHONPATH"] = package_root
-    return env
+    """Clean environment for spawned agent subprocesses."""
+    return os.environ.copy()
 
 
 def _pid_path(cfg: SwarmConfig, agent_name: str) -> Path:
@@ -72,6 +70,86 @@ def _normalize_targets(cfg: SwarmConfig, maybe_agent: Optional[str]) -> List[str
 @click.group()
 def cli() -> None:
     """minion-swarm daemon CLI."""
+
+
+@cli.command(name="init")
+@click.option("--config", "config_path", default=DEFAULT_CONFIG_PATH, show_default=True)
+@click.option("--project-dir", "project_dir", default=None)
+@click.option("--overwrite-config", is_flag=True, default=False)
+def init_cmd(config_path: str, project_dir: Optional[str], overwrite_config: bool) -> None:
+    """Seed and patch config YAML (run automatically on install)."""
+    cfg_path = Path(config_path).expanduser().resolve()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    example_path = DATA_DIR / "minion-swarm.yaml.example"
+    if not example_path.exists():
+        raise click.ClickException(f"Example config not found: {example_path}")
+
+    # Seed config from example if missing or overwrite requested
+    if not cfg_path.exists() or overwrite_config:
+        shutil.copy2(example_path, cfg_path)
+        click.echo(f"Seeded config from: {example_path}")
+
+    # Patch config
+    raw = yaml.safe_load(cfg_path.read_text()) or {}
+    if not isinstance(raw, dict):
+        raise click.ClickException("Config root must be a YAML mapping")
+
+    example = yaml.safe_load(example_path.read_text()) or {}
+
+    # Resolve project_dir
+    if project_dir:
+        pd = Path(project_dir).expanduser().resolve()
+        if not pd.is_dir():
+            raise click.ClickException(f"Project directory not found: {pd}")
+        raw["project_dir"] = str(pd)
+    elif "project_dir" not in raw or not raw["project_dir"]:
+        raw["project_dir"] = str(Path.cwd())
+
+    raw.setdefault("dead_drop_dir", ".dead-drop")
+    raw.setdefault("dead_drop_db", "~/.dead-drop/messages.db")
+
+    # Seed agents from example if missing
+    if not isinstance(raw.get("agents"), dict) or not raw.get("agents"):
+        example_agents = example.get("agents")
+        if isinstance(example_agents, dict) and example_agents:
+            raw["agents"] = example_agents
+        else:
+            raise click.ClickException("No agents defined and no agents in example config")
+
+    # Inject system prompt lines for dead-drop protocol
+    protocol_line = "Re-read .dead-drop/debug-protocol.md and BACKLOG.md before every task."
+    lead_policy_lines = [
+        "Never delegate work without a written task file in `.dead-drop/tasks/<TASK-ID>/task.md`.",
+        "Capture newly discovered ideas in `.dead-drop/BACKLOG.md`.",
+        "After each completed task, check backlog and assign the next written task.",
+    ]
+
+    for name, agent in list(raw.get("agents", {}).items()):
+        if not isinstance(agent, dict):
+            raise click.ClickException(f"Agent '{name}' config must be a mapping")
+
+        system = str(agent.get("system", "")).strip()
+        if not system:
+            role = str(agent.get("role", "coder"))
+            system = (
+                f"You are {name} ({role}) running under minion-swarm. "
+                "Check dead-drop inbox, execute tasks, and report via dead-drop."
+            )
+
+        if "debug-protocol.md" not in system or "BACKLOG.md" not in system:
+            system = f"{system}\n{protocol_line}"
+
+        if name == "swarm-lead":
+            for line in lead_policy_lines:
+                if line not in system:
+                    system = f"{system}\n{line}"
+
+        agent["system"] = system
+
+    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False, allow_unicode=False))
+    click.echo(f"Patched config: {cfg_path}")
+    click.echo(f"Effective project_dir: {raw['project_dir']}")
 
 
 @cli.command(name="start")
@@ -244,6 +322,49 @@ def run_agent_cmd(config_path: str, agent_name: str) -> None:
 
 def main() -> None:
     cli()
+
+
+def run_minion_main() -> None:
+    """Entry point for `run-minion` console_scripts — start one agent with cleanup."""
+    import atexit
+
+    agent_name = sys.argv[1] if len(sys.argv) > 1 else "swarm-lead"
+    config_path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_CONFIG_PATH
+    project_dir = sys.argv[3] if len(sys.argv) > 3 else str(Path.cwd())
+
+    # Ensure config is seeded and patched
+    ctx = click.Context(init_cmd)
+    ctx.invoke(init_cmd, config_path=config_path, project_dir=project_dir, overwrite_config=False)
+
+    cfg = load_config(config_path)
+    if agent_name not in cfg.agents:
+        click.echo(f"Error: Agent '{agent_name}' not found in config", err=True)
+        click.echo("Available agents:", err=True)
+        for name in cfg.agents:
+            click.echo(f"  - {name}", err=True)
+        sys.exit(2)
+
+    leave_running = os.environ.get("LEAVE_RUNNING", "0") == "1"
+
+    def cleanup() -> None:
+        if leave_running:
+            return
+        subprocess.run(
+            [sys.executable, "-m", "minion_swarm.cli", "stop", agent_name, "--config", config_path],
+            capture_output=True,
+        )
+
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+    # Start, show status, follow logs
+    ctx = click.Context(start_cmd)
+    ctx.invoke(start_cmd, agent=agent_name, config_path=config_path)
+    ctx = click.Context(status_cmd)
+    ctx.invoke(status_cmd, config_path=config_path)
+    ctx = click.Context(logs_cmd)
+    ctx.invoke(logs_cmd, agent=agent_name, config_path=config_path, lines=0, follow=True)
 
 
 if __name__ == "__main__":
