@@ -186,16 +186,22 @@ class AgentDaemon:
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
         rules_section = self._build_rules_section()
-        boot_section = (
-            "BOOT: You just started. Execute your ON STARTUP instructions now. "
-            "IMPORTANT: You are a daemon agent managed by minion-swarm. "
-            "When registering, use transport=\"daemon\". "
-            "Do NOT run poll.sh — minion-swarm handles polling for you."
-        )
+        role = self.agent_cfg.role or "coder"
+        boot_section = "\n".join([
+            "BOOT: You just started. Run these commands via the Bash tool:",
+            f"  minion register --name {self.agent_name} --class {role} --transport daemon",
+            f"  minion set-context --agent {self.agent_name} --context 'just started'",
+            f"  minion check-inbox --agent {self.agent_name}",
+            f"  minion set-status --agent {self.agent_name} --status 'ready for orders'",
+            "",
+            "IMPORTANT: You are a daemon agent managed by minion-swarm.",
+            "Do NOT run poll.sh — minion-swarm handles polling for you.",
+            "Do NOT use AskUserQuestion — it blocks in headless mode.",
+        ])
         return "\n\n".join([system_section, protocol_section, rules_section, boot_section])
 
     def _build_inbox_prompt(self) -> str:
-        """Prompt to check inbox and process messages via MCP."""
+        """Prompt to check inbox and process messages via CLI."""
         # Strip ON STARTUP block from system prompt — boot already ran it.
         # Including it causes the agent to re-register and re-check_inbox
         # on every invocation, which can create message loops.
@@ -209,12 +215,13 @@ class AgentDaemon:
             sections.append(self._build_history_block(self.buffer.snapshot()))
             self.inject_history_next_turn = False
 
-        inbox_section = (
-            "You have new messages. Check your minion-comms inbox "
-            "(check_inbox), read and process all messages, then send "
-            "results via minion-comms send when done. "
-            "Do NOT re-register — you are already registered."
-        )
+        inbox_section = "\n".join([
+            "You have new messages. Run via Bash tool:",
+            f"  minion check-inbox --agent {self.agent_name}",
+            "Read and process all messages, then send results:",
+            f"  minion send --from {self.agent_name} --to <recipient> --message '...'",
+            "Do NOT re-register — you are already registered.",
+        ])
         sections.extend([rules_section, inbox_section])
         return "\n\n".join(s for s in sections if s.strip())
 
@@ -379,11 +386,10 @@ class AgentDaemon:
         return "dead-drop"
 
     def _build_rules_section(self) -> str:
-        comms = self._comms_name()
         lines = [
             "Autonomous daemon rules:",
-            "- Do not use AskUserQuestion.",
-            f"- Route questions to lead via {comms} send.",
+            "- Do not use AskUserQuestion — it blocks in headless mode.",
+            f"- Route questions to lead via Bash: minion send --from {self.agent_name} --to lead --message '...'",
             "- Execute exactly the incoming task.",
             "- Send one summary message when done.",
             "- Task governance: lead manages task queue and assignment ownership.",
@@ -409,13 +415,16 @@ class AgentDaemon:
         return "\n".join(lines)
 
     def _build_protocol_section(self) -> str:
-        comms = self._comms_name()
+        name = self.agent_name
         return "\n".join(
             [
-                "Mandatory pre-task protocol (all agents):",
-                f"- Use {comms} for all inter-agent communication.",
-                f"- Check inbox via {comms} check_inbox before starting work.",
-                f"- Send results via {comms} send when done.",
+                "Communication protocol — use the `minion` CLI via Bash tool:",
+                f"- Check inbox: minion check-inbox --agent {name}",
+                f"- Send message: minion send --from {name} --to <recipient> --message '...'",
+                f"- Set status: minion set-status --agent {name} --status '...'",
+                f"- Set context: minion set-context --agent {name} --context '...'",
+                f"- View agents: minion who",
+                "- All minion commands output JSON. Use Bash tool to run them.",
             ]
         )
 
@@ -530,6 +539,7 @@ class AgentDaemon:
 
         # Strip CLAUDECODE env var so nested claude sessions don't refuse to start
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env["MINION_CLASS"] = self.agent_cfg.role or "coder"
 
         try:
             proc = subprocess.Popen(
