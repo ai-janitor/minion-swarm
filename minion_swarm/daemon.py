@@ -516,6 +516,9 @@ class AgentDaemon:
         self._log(f"exec: {cmd[0]} ({self.agent_cfg.provider})")
         self._print_stream_start(cmd[0])
 
+        # Strip CLAUDECODE env var so nested claude sessions don't refuse to start
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -524,6 +527,7 @@ class AgentDaemon:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=env,
             )
         except FileNotFoundError:
             self._log(f"command not found: {cmd[0]}")

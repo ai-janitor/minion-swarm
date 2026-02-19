@@ -1,4 +1,4 @@
-"""spawn-crew — open OS terminal windows for a crew of agents."""
+"""spawn-crew — lead in Terminal.app, workers in tmux panes."""
 
 import os
 import platform
@@ -33,17 +33,7 @@ def _find_crew(name: str) -> Path:
     sys.exit(1)
 
 
-def _open_terminal_macos(title: str, cmd: str, close_on_exit: bool = False) -> None:
-    # Wrap command so the terminal window closes itself when done
-    if close_on_exit:
-        # After the command finishes, close this Terminal.app window via AppleScript
-        close_script = (
-            "osascript -e "
-            "'tell application \"Terminal\" to close (every window whose name contains \"${TERM_TITLE}\")' "
-            "2>/dev/null"
-        )
-        cmd = f'TERM_TITLE="{title}" && {cmd}; {close_script}'
-
+def _open_terminal_macos(title: str, cmd: str) -> None:
     escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
     script = f'''
     tell application "Terminal"
@@ -55,26 +45,24 @@ def _open_terminal_macos(title: str, cmd: str, close_on_exit: bool = False) -> N
     subprocess.run(["osascript", "-e", script], check=True)
 
 
-def _open_terminal_linux(title: str, cmd: str, close_on_exit: bool = False) -> None:
-    # When close_on_exit is False, keep the shell alive after the command
-    suffix = "" if close_on_exit else "; exec bash"
+def _open_terminal_linux(title: str, cmd: str) -> None:
     if shutil.which("gnome-terminal"):
-        subprocess.Popen(["gnome-terminal", f"--title={title}", "--", "bash", "-c", f"{cmd}{suffix}"])
+        subprocess.Popen(["gnome-terminal", f"--title={title}", "--", "bash", "-c", f"{cmd}; exec bash"])
     elif shutil.which("xterm"):
-        subprocess.Popen(["xterm", "-T", title, "-e", f"bash -c '{cmd}{suffix}'"])
+        subprocess.Popen(["xterm", "-T", title, "-e", cmd])
     elif shutil.which("x-terminal-emulator"):
-        subprocess.Popen(["x-terminal-emulator", "-T", title, "-e", f"bash -c '{cmd}{suffix}'"])
+        subprocess.Popen(["x-terminal-emulator", "-T", title, "-e", cmd])
     else:
         click.echo("Error: no supported terminal emulator found", err=True)
         sys.exit(3)
 
 
-def _open_terminal(title: str, cmd: str, close_on_exit: bool = False) -> None:
+def _open_terminal(title: str, cmd: str) -> None:
     system = platform.system()
     if system == "Darwin":
-        _open_terminal_macos(title, cmd, close_on_exit=close_on_exit)
+        _open_terminal_macos(title, cmd)
     elif system == "Linux":
-        _open_terminal_linux(title, cmd, close_on_exit=close_on_exit)
+        _open_terminal_linux(title, cmd)
     else:
         click.echo(f"Error: unsupported OS: {system}", err=True)
         sys.exit(3)
@@ -84,7 +72,7 @@ def _open_terminal(title: str, cmd: str, close_on_exit: bool = False) -> None:
 @click.argument("crew_name")
 @click.argument("project_dir", default=".")
 def main(crew_name: str, project_dir: str) -> None:
-    """Open OS terminal windows for each member of a crew."""
+    """Spawn a crew: lead in Terminal.app, workers in tmux panes."""
     project_dir = str(Path(project_dir).resolve())
     crew_file = _find_crew(crew_name)
 
@@ -104,7 +92,11 @@ def main(crew_name: str, project_dir: str) -> None:
         click.echo(f"Error: no agents defined in {crew_file}", err=True)
         sys.exit(1)
 
-    # Write patched config for minion-swarm (daemons only — lead is interactive)
+    if not shutil.which("tmux"):
+        click.echo("Error: tmux is required for worker panes. Install with: brew install tmux", err=True)
+        sys.exit(2)
+
+    # Write patched config for minion-swarm
     config_dir = Path.home() / ".minion-swarm"
     config_dir.mkdir(parents=True, exist_ok=True)
     crew_config = config_dir / f"{crew_name}.yaml"
@@ -120,7 +112,7 @@ def main(crew_name: str, project_dir: str) -> None:
             capture_output=True,
         )
 
-    # Write lead system prompt to a file (shell quoting is unreliable for multi-line prompts)
+    # Write lead system prompt to file
     prompt_dir = config_dir / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     lead_prompt_file = prompt_dir / f"{crew_name}-{lead_name}.txt"
@@ -133,39 +125,77 @@ def main(crew_name: str, project_dir: str) -> None:
         for log_file in logs_dir.glob("*.log"):
             log_file.write_text("")
 
+    tmux_session = f"crew-{crew_name}"
+
+    # Kill existing tmux session if any
+    subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
+
     click.echo(f"=== Spawning {crew_name} crew ===")
     click.echo(f"Project: {project_dir}")
     click.echo()
 
-    # Terminal 1: lead (interactive claude session)
-    click.echo(f"[{lead_name}] Interactive claude session (lead)")
+    # Terminal.app: lead (interactive claude session)
+    click.echo(f"[{lead_name}] Interactive claude session (lead) -> Terminal.app")
     lead_cmd = f'cd {project_dir} && claude --dangerously-skip-permissions --system-prompt "$(cat {lead_prompt_file})"'
     _open_terminal(lead_name, lead_cmd)
 
-    # Terminals 2-N: daemon agents with log tailing
-    # The command monitors the daemon PID — when the daemon dies, the tail
-    # exits and the shell closes (via `; exit`).
-    for agent in agents:
-        click.echo(f"[{agent}] Daemon + log tail")
-        state_file = Path(project_dir) / ".minion-swarm" / "state" / f"{agent}.json"
+    # tmux session: one pane per daemon agent
+    # First agent creates the session, rest split into new panes
+    for i, agent in enumerate(agents):
         log_file = Path(project_dir) / ".minion-swarm" / "logs" / f"{agent}.log"
-        agent_cmd = (
+        # Start daemon, then tail log. When daemon dies, show exit message.
+        pane_cmd = (
             f"cd {project_dir} && "
             f"echo '=== {agent} ===' && "
             f"minion-swarm start {agent} --config {crew_config} && "
-            f"PID=$(python3 -c \"import json; print(json.load(open('{state_file}'))['pid'])\") && "
-            f"tail -f {log_file} & TAIL_PID=$! && "
-            f"while kill -0 $PID 2>/dev/null; do sleep 2; done && "
-            f"kill $TAIL_PID 2>/dev/null; "
-            f"echo '=== {agent} exited ===' && sleep 1 && exit"
+            f"tail -f {log_file}; "
+            f"echo '=== {agent} exited ==='; read -p 'Press enter to close'"
         )
-        _open_terminal(agent, agent_cmd, close_on_exit=True)
+
+        if i == 0:
+            # Create the tmux session with the first agent
+            subprocess.run([
+                "tmux", "new-session", "-d",
+                "-s", tmux_session,
+                "-n", agent,
+                "bash", "-c", pane_cmd,
+            ], check=True)
+        else:
+            # Split window for subsequent agents
+            subprocess.run([
+                "tmux", "split-window",
+                "-t", tmux_session,
+                "-v",
+                "bash", "-c", pane_cmd,
+            ], check=True)
+            # Re-tile evenly after each split
+            subprocess.run([
+                "tmux", "select-layout", "-t", tmux_session, "tiled",
+            ], capture_output=True)
+
+    # Rename panes for identification
+    for i, agent in enumerate(agents):
+        subprocess.run([
+            "tmux", "select-pane", "-t", f"{tmux_session}:{0}.{i}",
+            "-T", agent,
+        ], capture_output=True)
+
+    # Enable pane titles
+    subprocess.run([
+        "tmux", "set-option", "-t", tmux_session, "pane-border-status", "top",
+    ], capture_output=True)
+    subprocess.run([
+        "tmux", "set-option", "-t", tmux_session, "pane-border-format", " #{pane_title} ",
+    ], capture_output=True)
 
     click.echo()
-    click.echo("=== All terminals spawned ===")
-    click.echo(f"Config: {crew_config}")
+    click.echo(f"=== {crew_name} crew running ===")
+    click.echo()
+    click.echo(f"  Lead:    Terminal.app ({lead_name})")
+    click.echo(f"  Workers: tmux session '{tmux_session}'")
+    click.echo(f"  Config:  {crew_config}")
     click.echo()
     click.echo("Controls:")
-    click.echo(f"  minion-swarm status --config {crew_config}")
-    click.echo(f"  minion-swarm stop <agent> --config {crew_config}")
-    click.echo(f"  minion-swarm stop --config {crew_config}   # stop all")
+    click.echo(f"  tmux attach -t {tmux_session}        # view worker panes")
+    click.echo(f"  minion-swarm stop --config {crew_config}  # stop daemons")
+    click.echo(f"  tmux kill-session -t {tmux_session}   # close panes")
