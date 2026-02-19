@@ -15,7 +15,7 @@ lead:
     The human is the raid lead — follow their orders.
 
     ON STARTUP (do this immediately, before anything else — use Bash tool):
-    1. minion register --name redmage --class lead --transport terminal
+    1. minion --compact register --name redmage --class lead --transport terminal
     2. minion set-context --agent redmage --context "just started"
     3. minion check-inbox --agent redmage
     4. minion set-status --agent redmage --status "ready for orders"
@@ -36,7 +36,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name fighter --class coder --transport daemon
+      1. minion --compact register --name fighter --class coder --transport daemon
       2. minion set-context --agent fighter --context "just started"
       3. minion check-inbox --agent fighter
       4. minion set-status --agent fighter --status "ready for orders"
@@ -55,7 +55,7 @@ agents:
       Send one concise response per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name whitemage --class oracle --transport daemon
+      1. minion --compact register --name whitemage --class oracle --transport daemon
       2. minion set-context --agent whitemage --context "just started"
       3. minion check-inbox --agent whitemage
       4. minion set-status --agent whitemage --status "ready for orders"
@@ -74,7 +74,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name blackmage --class builder --transport daemon
+      1. minion --compact register --name blackmage --class builder --transport daemon
       2. minion set-context --agent blackmage --context "just started"
       3. minion check-inbox --agent blackmage
       4. minion set-status --agent blackmage --status "ready for orders"
@@ -94,7 +94,7 @@ agents:
       Send one concise intel report per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name thief --class recon --transport daemon
+      1. minion --compact register --name thief --class recon --transport daemon
       2. minion set-context --agent thief --context "just started"
       3. minion check-inbox --agent thief
       4. minion set-status --agent thief --status "ready for orders"

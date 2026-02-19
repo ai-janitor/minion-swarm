@@ -189,7 +189,7 @@ class AgentDaemon:
         role = self.agent_cfg.role or "coder"
         boot_section = "\n".join([
             "BOOT: You just started. Run these commands via the Bash tool:",
-            f"  minion register --name {self.agent_name} --class {role} --transport daemon",
+            f"  minion --compact register --name {self.agent_name} --class {role} --transport daemon",
             f"  minion set-context --agent {self.agent_name} --context 'just started'",
             f"  minion check-inbox --agent {self.agent_name}",
             f"  minion set-status --agent {self.agent_name} --status 'ready for orders'",

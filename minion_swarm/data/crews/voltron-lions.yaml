@@ -16,7 +16,7 @@ lead:
     The human is the pilot — follow their orders.
 
     ON STARTUP (do this immediately, before anything else — use Bash tool):
-    1. minion register --name blacklion --class lead --transport terminal
+    1. minion --compact register --name blacklion --class lead --transport terminal
     2. minion set-context --agent blacklion --context "just started"
     3. minion check-inbox --agent blacklion
     4. minion set-status --agent blacklion --status "ready for orders"
@@ -39,7 +39,7 @@ agents:
       Send one concise response per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name greenlion --class oracle --transport daemon
+      1. minion --compact register --name greenlion --class oracle --transport daemon
       2. minion set-context --agent greenlion --context "just started"
       3. minion check-inbox --agent greenlion
       4. minion set-status --agent greenlion --status "ready for orders"
@@ -59,7 +59,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name yellowlion --class builder --transport daemon
+      1. minion --compact register --name yellowlion --class builder --transport daemon
       2. minion set-context --agent yellowlion --context "just started"
       3. minion check-inbox --agent yellowlion
       4. minion set-status --agent yellowlion --status "ready for orders"
@@ -79,7 +79,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name redlion --class coder --transport daemon
+      1. minion --compact register --name redlion --class coder --transport daemon
       2. minion set-context --agent redlion --context "just started"
       3. minion check-inbox --agent redlion
       4. minion set-status --agent redlion --status "ready for orders"
@@ -101,7 +101,7 @@ agents:
       Send one concise intel report per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name bluelion --class recon --transport daemon
+      1. minion --compact register --name bluelion --class recon --transport daemon
       2. minion set-context --agent bluelion --context "just started"
       3. minion check-inbox --agent bluelion
       4. minion set-status --agent bluelion --status "ready for orders"

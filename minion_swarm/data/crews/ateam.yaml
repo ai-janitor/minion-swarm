@@ -16,7 +16,7 @@ lead:
     The human is the client — follow their orders.
 
     ON STARTUP (do this immediately, before anything else — use Bash tool):
-    1. minion register --name hannibal --class lead --transport terminal
+    1. minion --compact register --name hannibal --class lead --transport terminal
     2. minion set-context --agent hannibal --context "just started"
     3. minion check-inbox --agent hannibal
     4. minion set-status --agent hannibal --status "ready for orders"
@@ -39,7 +39,7 @@ agents:
       Send one concise intel report per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name face --class recon --transport daemon
+      1. minion --compact register --name face --class recon --transport daemon
       2. minion set-context --agent face --context "just started"
       3. minion check-inbox --agent face
       4. minion set-status --agent face --status "ready for orders"
@@ -59,7 +59,7 @@ agents:
       Send one concise response per request.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name murdock --class oracle --transport daemon
+      1. minion --compact register --name murdock --class oracle --transport daemon
       2. minion set-context --agent murdock --context "just started"
       3. minion check-inbox --agent murdock
       4. minion set-status --agent murdock --status "ready for orders"
@@ -79,7 +79,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else — use Bash tool):
-      1. minion register --name ba --class builder --transport daemon
+      1. minion --compact register --name ba --class builder --transport daemon
       2. minion set-context --agent ba --context "just started"
       3. minion check-inbox --agent ba
       4. minion set-status --agent ba --status "ready for orders"
