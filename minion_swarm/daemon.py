@@ -30,6 +30,8 @@ class AgentRunResult:
     timed_out: bool
     compaction_detected: bool
     command_name: str
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class RollingBuffer:
@@ -71,6 +73,8 @@ class AgentDaemon:
 
         self._stop_event = threading.Event()
         self._invocation = 0
+        self._session_input_tokens = 0
+        self._session_output_tokens = 0
 
         self.state_path = self.config.state_dir / f"{self.agent_name}.json"
         self.resume_ready = self._load_resume_ready()
@@ -116,6 +120,10 @@ class AgentDaemon:
         result = self._run_agent(boot_prompt)
         if result.exit_code == 0:
             self.resume_ready = True
+            if result.input_tokens > 0 or result.output_tokens > 0:
+                self._session_input_tokens += result.input_tokens
+                self._session_output_tokens += result.output_tokens
+                self._update_hp(self._session_input_tokens, self._session_output_tokens)
             self._log("boot: complete")
         else:
             self._log(f"boot: failed (exit {result.exit_code})")
@@ -239,6 +247,12 @@ class AgentDaemon:
     def _process_prompt(self, prompt: str) -> bool:
         """Run the agent with a prompt and handle the result."""
         result = self._run_agent(prompt)
+
+        # Track session-cumulative HP and write to DB
+        if result.input_tokens > 0 or result.output_tokens > 0:
+            self._session_input_tokens += result.input_tokens
+            self._session_output_tokens += result.output_tokens
+            self._update_hp(self._session_input_tokens, self._session_output_tokens)
 
         if result.compaction_detected:
             self.inject_history_next_turn = True
@@ -575,6 +589,8 @@ class AgentDaemon:
         last_output_at = time.monotonic()
         displayed_chars = 0
         hidden_chars = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         while True:
             try:
@@ -594,6 +610,12 @@ class AgentDaemon:
             last_output_at = time.monotonic()
             self.buffer.append(line)
             rendered, has_compaction = self._render_stream_line(line)
+
+            # Extract token usage from stream-json
+            inp, out = self._extract_usage(line)
+            total_input_tokens += inp
+            total_output_tokens += out
+
             if rendered:
                 remaining = MAX_CONSOLE_STREAM_CHARS - displayed_chars
                 if remaining > 0:
@@ -624,6 +646,8 @@ class AgentDaemon:
             timed_out=timed_out,
             compaction_detected=compaction_detected,
             command_name=cmd[0],
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
         )
 
     def _render_stream_line(self, line: str) -> Tuple[str, bool]:
@@ -683,6 +707,55 @@ class AgentDaemon:
             "auto-compact",
         )
         return any(marker in low for marker in markers)
+
+    def _extract_usage(self, line: str) -> Tuple[int, int]:
+        """Extract token usage from a stream-json line. Returns (input_tokens, output_tokens)."""
+        raw = line.strip()
+        if not raw or "tokens" not in raw:
+            return 0, 0
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return 0, 0
+        usage = self._find_usage_dict(data)
+        if not usage:
+            return 0, 0
+        return usage.get("input_tokens", 0) or 0, usage.get("output_tokens", 0) or 0
+
+    def _find_usage_dict(self, obj: Any) -> Optional[dict]:
+        """Recursively find a dict containing 'input_tokens' in a JSON structure."""
+        if not isinstance(obj, dict):
+            return None
+        if "input_tokens" in obj:
+            return obj
+        for v in obj.values():
+            if isinstance(v, dict):
+                found = self._find_usage_dict(v)
+                if found:
+                    return found
+        return None
+
+    def _update_hp(self, input_tokens: int, output_tokens: int) -> None:
+        """Call minion update-hp to write observed HP to SQLite."""
+        limit = 200_000  # Claude default context window
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env["MINION_CLASS"] = "lead"  # Daemon has permission to write HP
+        try:
+            subprocess.run(
+                [
+                    "minion", "update-hp",
+                    "--agent", self.agent_name,
+                    "--input-tokens", str(input_tokens),
+                    "--output-tokens", str(output_tokens),
+                    "--limit", str(limit),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=env,
+            )
+        except Exception as exc:
+            self._log(f"update-hp failed: {exc}")
 
     def _print_stream_start(self, command_name: str) -> None:
         self._invocation += 1
