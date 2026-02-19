@@ -132,13 +132,21 @@ def main(crew_name: str, project_dir: str) -> None:
     _open_terminal(lead_name, lead_cmd)
 
     # Terminals 2-N: daemon agents with log tailing
+    # The command monitors the daemon PID — when the daemon dies, the tail
+    # exits and the shell closes (via `; exit`).
     for agent in agents:
         click.echo(f"[{agent}] Daemon + log tail")
+        state_file = Path(project_dir) / ".minion-swarm" / "state" / f"{agent}.json"
+        log_file = Path(project_dir) / ".minion-swarm" / "logs" / f"{agent}.log"
         agent_cmd = (
             f"cd {project_dir} && "
             f"echo '=== {agent} ===' && "
             f"minion-swarm start {agent} --config {crew_config} && "
-            f"exec minion-swarm logs {agent} --config {crew_config} --lines 0"
+            f"PID=$(python3 -c \"import json; print(json.load(open('{state_file}'))['pid'])\") && "
+            f"tail -f {log_file} & TAIL_PID=$! && "
+            f"while kill -0 $PID 2>/dev/null; do sleep 2; done && "
+            f"kill $TAIL_PID 2>/dev/null; "
+            f"echo '=== {agent} exited ===' && sleep 1 && exit"
         )
         _open_terminal(agent, agent_cmd)
 
