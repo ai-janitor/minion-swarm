@@ -185,6 +185,7 @@ def start_cmd(agent: Optional[str], config_path: str) -> None:
         proc = subprocess.Popen(
             cmd,
             cwd=str(cfg.project_dir),
+            stdin=subprocess.DEVNULL,
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             text=True,
@@ -218,16 +219,24 @@ def stop_cmd(agent: Optional[str], config_path: str) -> None:
             pid_file.unlink(missing_ok=True)
             continue
 
-        click.echo(f"{name}: sending SIGTERM to pid {pid}")
-        os.kill(pid, signal.SIGTERM)
+        # Kill entire process group (daemon + child claude -p processes).
+        # Daemon is started with start_new_session=True, so pgid == pid.
+        click.echo(f"{name}: sending SIGTERM to process group {pid}")
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
 
-        deadline = time.time() + 10
+        deadline = time.time() + 5
         while time.time() < deadline and _is_pid_alive(pid):
             time.sleep(0.2)
 
         if _is_pid_alive(pid):
-            click.echo(f"{name}: force killing pid {pid}")
-            os.kill(pid, signal.SIGKILL)
+            click.echo(f"{name}: force killing process group {pid}")
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
         pid_file.unlink(missing_ok=True)
         click.echo(f"{name}: stopped")

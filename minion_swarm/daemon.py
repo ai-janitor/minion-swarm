@@ -70,6 +70,7 @@ class AgentDaemon:
         self.last_error: Optional[str] = None
 
         self._stop_event = threading.Event()
+        self._invocation = 0
 
         self.state_path = self.config.state_dir / f"{self.agent_name}.json"
         self.resume_ready = self._load_resume_ready()
@@ -534,6 +535,7 @@ class AgentDaemon:
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.config.project_dir),
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -673,16 +675,19 @@ class AgentDaemon:
         return any(marker in low for marker in markers)
 
     def _print_stream_start(self, command_name: str) -> None:
+        self._invocation += 1
+        ts = datetime.now().strftime("%H:%M:%S")
         print(
-            f"\n=== model-stream start: agent={self.agent_name} cmd={command_name} ===",
+            f"\n=== model-stream start: agent={self.agent_name} cmd={command_name} v={self._invocation} ts={ts} ===",
             flush=True,
         )
 
     def _print_stream_end(self, command_name: str, displayed_chars: int, hidden_chars: int) -> None:
+        ts = datetime.now().strftime("%H:%M:%S")
         if hidden_chars > 0:
             print(f"\n[model-stream abbreviated: {hidden_chars} chars hidden]", flush=True)
         print(
-            f"=== model-stream end: agent={self.agent_name} cmd={command_name} shown={displayed_chars} chars ===",
+            f"=== model-stream end: agent={self.agent_name} cmd={command_name} v={self._invocation} ts={ts} shown={displayed_chars} chars ===",
             flush=True,
         )
 
