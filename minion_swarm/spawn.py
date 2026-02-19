@@ -33,8 +33,17 @@ def _find_crew(name: str) -> Path:
     sys.exit(1)
 
 
-def _open_terminal_macos(title: str, cmd: str) -> None:
-    # Escape for AppleScript string literal
+def _open_terminal_macos(title: str, cmd: str, close_on_exit: bool = False) -> None:
+    # Wrap command so the terminal window closes itself when done
+    if close_on_exit:
+        # After the command finishes, close this Terminal.app window via AppleScript
+        close_script = (
+            "osascript -e "
+            "'tell application \"Terminal\" to close (every window whose name contains \"${TERM_TITLE}\")' "
+            "2>/dev/null"
+        )
+        cmd = f'TERM_TITLE="{title}" && {cmd}; {close_script}'
+
     escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
     script = f'''
     tell application "Terminal"
@@ -46,24 +55,26 @@ def _open_terminal_macos(title: str, cmd: str) -> None:
     subprocess.run(["osascript", "-e", script], check=True)
 
 
-def _open_terminal_linux(title: str, cmd: str) -> None:
+def _open_terminal_linux(title: str, cmd: str, close_on_exit: bool = False) -> None:
+    # When close_on_exit is False, keep the shell alive after the command
+    suffix = "" if close_on_exit else "; exec bash"
     if shutil.which("gnome-terminal"):
-        subprocess.Popen(["gnome-terminal", f"--title={title}", "--", "bash", "-c", f"{cmd}; exec bash"])
+        subprocess.Popen(["gnome-terminal", f"--title={title}", "--", "bash", "-c", f"{cmd}{suffix}"])
     elif shutil.which("xterm"):
-        subprocess.Popen(["xterm", "-T", title, "-e", cmd])
+        subprocess.Popen(["xterm", "-T", title, "-e", f"bash -c '{cmd}{suffix}'"])
     elif shutil.which("x-terminal-emulator"):
-        subprocess.Popen(["x-terminal-emulator", "-T", title, "-e", cmd])
+        subprocess.Popen(["x-terminal-emulator", "-T", title, "-e", f"bash -c '{cmd}{suffix}'"])
     else:
         click.echo("Error: no supported terminal emulator found", err=True)
         sys.exit(3)
 
 
-def _open_terminal(title: str, cmd: str) -> None:
+def _open_terminal(title: str, cmd: str, close_on_exit: bool = False) -> None:
     system = platform.system()
     if system == "Darwin":
-        _open_terminal_macos(title, cmd)
+        _open_terminal_macos(title, cmd, close_on_exit=close_on_exit)
     elif system == "Linux":
-        _open_terminal_linux(title, cmd)
+        _open_terminal_linux(title, cmd, close_on_exit=close_on_exit)
     else:
         click.echo(f"Error: unsupported OS: {system}", err=True)
         sys.exit(3)
@@ -148,7 +159,7 @@ def main(crew_name: str, project_dir: str) -> None:
             f"kill $TAIL_PID 2>/dev/null; "
             f"echo '=== {agent} exited ===' && sleep 1 && exit"
         )
-        _open_terminal(agent, agent_cmd)
+        _open_terminal(agent, agent_cmd, close_on_exit=True)
 
     click.echo()
     click.echo("=== All terminals spawned ===")
