@@ -19,6 +19,39 @@ MAX_CONSOLE_STREAM_CHARS = 12_000
 
 POLL_SCRIPT = Path.home() / ".minion-comms" / "poll.sh"
 
+# Claude Code system prompt + tool definitions token costs (approximate).
+# Each tool's JSON schema + description consumes context tokens.
+# These are injected by Claude Code before the agent's prompt.
+CLAUDE_CODE_SYSTEM_TOKENS = 3_500   # Base system prompt (instructions, rules, formatting)
+CLAUDE_CODE_TOOL_TOKENS: dict[str, int] = {
+    "Bash":             400,
+    "Read":             350,
+    "Write":            250,
+    "Edit":             400,
+    "Glob":             200,
+    "Grep":             500,
+    "WebFetch":         300,
+    "WebSearch":        250,
+    "Task":             2_500,  # Largest — includes all agent type descriptions
+    "NotebookEdit":     300,
+    "AskUserQuestion":  500,
+    "EnterPlanMode":    800,
+    "ExitPlanMode":     300,
+    "TaskCreate":       500,
+    "TaskUpdate":       500,
+    "TaskList":         300,
+    "TaskGet":          200,
+    "TeamCreate":       1_500,
+    "TeamDelete":       100,
+    "SendMessage":      800,
+    "Skill":            300,
+    "TaskOutput":       200,
+    "TaskStop":         100,
+}
+# Total with all tools: ~3500 + ~10550 ≈ 14k. With MCP tools, add per-tool.
+# Claude Code also injects CLAUDE.md, rules, MEMORY.md — varies per project.
+CLAUDE_CODE_PROJECT_OVERHEAD = 4_000  # Rough estimate for CLAUDE.md + rules
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -75,6 +108,8 @@ class AgentDaemon:
         self._invocation = 0
         self._session_input_tokens = 0
         self._session_output_tokens = 0
+        self._tool_overhead_tokens = 0  # Claude Code system prompt/tools overhead, measured at boot
+        self._context_window = 0        # Set from modelUsage.contextWindow in stream-json
 
         self.state_path = self.config.state_dir / f"{self.agent_name}.json"
         self.resume_ready = self._load_resume_ready()
@@ -120,7 +155,12 @@ class AgentDaemon:
         result = self._run_agent(boot_prompt)
         if result.exit_code == 0:
             self.resume_ready = True
-            if result.input_tokens > 0 or result.output_tokens > 0:
+            if result.input_tokens > 0:
+                # input_tokens now includes cache tokens — real context consumed
+                prompt_tokens = len(boot_prompt) // 4  # rough chars-to-tokens
+                self._tool_overhead_tokens = max(0, result.input_tokens - prompt_tokens)
+                ctx = self._context_window if self._context_window > 0 else 200_000
+                self._log(f"boot HP: {result.input_tokens // 1000}k/{ctx // 1000}k context, overhead≈{self._tool_overhead_tokens // 1000}k, prompt≈{prompt_tokens} tokens")
                 self._session_input_tokens += result.input_tokens
                 self._session_output_tokens += result.output_tokens
                 self._update_hp(self._session_input_tokens, self._session_output_tokens)
@@ -611,10 +651,13 @@ class AgentDaemon:
             self.buffer.append(line)
             rendered, has_compaction = self._render_stream_line(line)
 
-            # Extract token usage from stream-json
+            # Extract token usage from stream-json (last value wins —
+            # result event comes last with full totals including cache)
             inp, out = self._extract_usage(line)
-            total_input_tokens += inp
-            total_output_tokens += out
+            if inp > 0:
+                total_input_tokens = inp
+            if out > 0:
+                total_output_tokens = out
 
             if rendered:
                 remaining = MAX_CONSOLE_STREAM_CHARS - displayed_chars
@@ -709,7 +752,17 @@ class AgentDaemon:
         return any(marker in low for marker in markers)
 
     def _extract_usage(self, line: str) -> Tuple[int, int]:
-        """Extract token usage from a stream-json line. Returns (input_tokens, output_tokens)."""
+        """Extract token usage from a stream-json line. Returns (input_tokens, output_tokens).
+
+        Claude Code stream-json reports tokens split across fields:
+        - input_tokens: non-cached prompt tokens (often tiny)
+        - cache_creation_input_tokens: system prompt tokens being cached
+        - cache_read_input_tokens: system prompt tokens read from cache
+        Total context consumed = input + cache_creation + cache_read.
+
+        The 'result' event also has modelUsage with contextWindow — we extract
+        that to set the HP limit accurately.
+        """
         raw = line.strip()
         if not raw or "tokens" not in raw:
             return 0, 0
@@ -717,10 +770,34 @@ class AgentDaemon:
             data = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             return 0, 0
+        if not isinstance(data, dict):
+            return 0, 0
+
+        # Prefer modelUsage from result event — it has contextWindow too
+        if data.get("type") == "result":
+            model_usage = data.get("modelUsage")
+            if isinstance(model_usage, dict):
+                for model_info in model_usage.values():
+                    if isinstance(model_info, dict):
+                        inp = (model_info.get("inputTokens", 0) or 0) + \
+                              (model_info.get("cacheCreationInputTokens", 0) or 0) + \
+                              (model_info.get("cacheReadInputTokens", 0) or 0)
+                        out = model_info.get("outputTokens", 0) or 0
+                        # Extract context window for accurate HP limit
+                        ctx_window = model_info.get("contextWindow", 0)
+                        if ctx_window > 0:
+                            self._context_window = ctx_window
+                        return inp, out
+
+        # Fall back to usage dict in assistant/message events
         usage = self._find_usage_dict(data)
         if not usage:
             return 0, 0
-        return usage.get("input_tokens", 0) or 0, usage.get("output_tokens", 0) or 0
+        inp = (usage.get("input_tokens", 0) or 0) + \
+              (usage.get("cache_creation_input_tokens", 0) or 0) + \
+              (usage.get("cache_read_input_tokens", 0) or 0)
+        out = usage.get("output_tokens", 0) or 0
+        return inp, out
 
     def _find_usage_dict(self, obj: Any) -> Optional[dict]:
         """Recursively find a dict containing 'input_tokens' in a JSON structure."""
@@ -735,9 +812,26 @@ class AgentDaemon:
                     return found
         return None
 
+    def _estimate_tool_overhead(self) -> int:
+        """Estimate Claude Code system prompt + tool definition token overhead."""
+        total = CLAUDE_CODE_SYSTEM_TOKENS + CLAUDE_CODE_PROJECT_OVERHEAD
+
+        allowed = self.agent_cfg.allowed_tools
+        if allowed:
+            # Parse allowed tools list — e.g. "Bash Edit Read Glob Grep"
+            tool_names = [t.split("(")[0].strip() for t in allowed.replace(",", " ").split()]
+            for name in tool_names:
+                total += CLAUDE_CODE_TOOL_TOKENS.get(name, 300)  # 300 default for unknown tools
+        else:
+            # All tools enabled — sum everything
+            total += sum(CLAUDE_CODE_TOOL_TOKENS.values())
+
+        return total
+
     def _update_hp(self, input_tokens: int, output_tokens: int) -> None:
         """Call minion update-hp to write observed HP to SQLite."""
-        limit = 200_000  # Claude default context window
+        # Use API-reported context window, fall back to 200k default
+        limit = self._context_window if self._context_window > 0 else 200_000
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         env["MINION_CLASS"] = "lead"  # Daemon has permission to write HP
         try:
