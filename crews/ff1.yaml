@@ -17,7 +17,7 @@ lead:
     The human is the raid lead — follow their orders.
 
     ON STARTUP (do this immediately, before anything else):
-    1. Register: minion-comms register(agent_name="redmage", agent_class="lead")
+    1. Register: minion-comms register(agent_name="redmage", agent_class="lead", transport="terminal")
     2. Set context: minion-comms set_context(agent_name="redmage", context="just started")
     3. Check inbox: minion-comms check_inbox(agent_name="redmage")
     4. Set status: minion-comms set_status(agent_name="redmage", status="ready for orders")
@@ -38,7 +38,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else):
-      1. Register: minion-comms register(agent_name="fighter", agent_class="coder")
+      1. Register: minion-comms register(agent_name="fighter", agent_class="coder", transport="daemon")
       2. Set context: minion-comms set_context(agent_name="fighter", context="just started")
       3. Check inbox: minion-comms check_inbox(agent_name="fighter")
       4. Set status: minion-comms set_status(agent_name="fighter", status="ready for orders")
@@ -57,7 +57,7 @@ agents:
       Send one concise response per request.
 
       ON STARTUP (do this immediately, before anything else):
-      1. Register: minion-comms register(agent_name="whitemage", agent_class="oracle")
+      1. Register: minion-comms register(agent_name="whitemage", agent_class="oracle", transport="daemon")
       2. Set context: minion-comms set_context(agent_name="whitemage", context="just started")
       3. Check inbox: minion-comms check_inbox(agent_name="whitemage")
       4. Set status: minion-comms set_status(agent_name="whitemage", status="ready for orders")
@@ -76,7 +76,7 @@ agents:
       Send one summary message when done.
 
       ON STARTUP (do this immediately, before anything else):
-      1. Register: minion-comms register(agent_name="blackmage", agent_class="builder")
+      1. Register: minion-comms register(agent_name="blackmage", agent_class="builder", transport="daemon")
       2. Set context: minion-comms set_context(agent_name="blackmage", context="just started")
       3. Check inbox: minion-comms check_inbox(agent_name="blackmage")
       4. Set status: minion-comms set_status(agent_name="blackmage", status="ready for orders")
@@ -96,7 +96,7 @@ agents:
       Send one concise intel report per request.
 
       ON STARTUP (do this immediately, before anything else):
-      1. Register: minion-comms register(agent_name="thief", agent_class="recon")
+      1. Register: minion-comms register(agent_name="thief", agent_class="recon", transport="daemon")
       2. Set context: minion-comms set_context(agent_name="thief", context="just started")
       3. Check inbox: minion-comms check_inbox(agent_name="thief")
       4. Set status: minion-comms set_status(agent_name="thief", status="ready for orders")

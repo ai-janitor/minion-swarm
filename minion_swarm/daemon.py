@@ -179,7 +179,12 @@ class AgentDaemon:
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
         rules_section = self._build_rules_section()
-        boot_section = "BOOT: You just started. Execute your ON STARTUP instructions now."
+        boot_section = (
+            "BOOT: You just started. Execute your ON STARTUP instructions now. "
+            "IMPORTANT: You are a daemon agent managed by minion-swarm. "
+            "When registering, use transport=\"daemon\". "
+            "Do NOT run poll.sh — minion-swarm handles polling for you."
+        )
         return "\n\n".join([system_section, protocol_section, rules_section, boot_section])
 
     def _build_inbox_prompt(self) -> str:
