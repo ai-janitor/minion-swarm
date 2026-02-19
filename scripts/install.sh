@@ -62,6 +62,30 @@ else
     warn "Skipping config init (minion-swarm not on PATH yet)"
 fi
 
+# ── Step 3: Seed crew files ──────────────────────────────────────────────────
+
+CREWS_DEST="$HOME/.minion-swarm/crews"
+CREWS_SRC=""
+
+# Find bundled crew files from the installed package
+if command -v python3 &>/dev/null; then
+    CREWS_SRC="$(python3 -c "
+from pathlib import Path
+import minion_swarm
+pkg = Path(minion_swarm.__file__).parent.parent
+crews = pkg / 'crews'
+if crews.is_dir(): print(crews)
+" 2>/dev/null || true)"
+fi
+
+if [[ -n "$CREWS_SRC" && -d "$CREWS_SRC" ]]; then
+    mkdir -p "$CREWS_DEST"
+    cp -n "$CREWS_SRC"/*.yaml "$CREWS_DEST/" 2>/dev/null || true
+    ok "Crew files seeded to $CREWS_DEST"
+else
+    info "Crew files will be available after PATH is configured"
+fi
+
 # ── Done ────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -74,4 +98,8 @@ echo "    cd /path/to/repo && run-minion swarm-lead"
 echo "    minion-swarm start swarm-lead"
 echo "    minion-swarm status"
 echo "    minion-swarm logs swarm-lead --lines 0"
+echo ""
+echo "  Crews:"
+echo "    spawn-crew ff1              # 4 terminals: fighter + whitemage + blackmage + thief"
+echo "    ls ~/.minion-swarm/crews/   # available crew files"
 echo ""

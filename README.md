@@ -64,6 +64,25 @@ Optional explicit args:
 run-minion <agent-name> <config-path> <project-dir>
 ```
 
+## Crews
+
+Crews are predefined party compositions that spawn multiple agents in separate terminal windows.
+
+```bash
+# Spawn the FF1 crew (4 terminals: fighter + 3 daemons)
+bash scripts/spawn-crew.sh ff1 /path/to/repo
+
+# Controls
+minion-swarm status --config ~/.minion-swarm/ff1.yaml
+minion-swarm stop --config ~/.minion-swarm/ff1.yaml
+```
+
+Crew files live in `crews/`. Each `.yaml` defines a party composition. Create your own by copying an existing crew file.
+
+| Crew | Agents | Description |
+|------|--------|-------------|
+| `ff1` | fighter, whitemage, blackmage, thief | FF1-themed party: coder lead + oracle + builder + recon |
+
 ## Config
 
 Example file: `minion_swarm/data/minion-swarm.yaml.example`

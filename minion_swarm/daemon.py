@@ -88,8 +88,11 @@ class AgentDaemon:
 
         self._log(f"starting daemon for {self.agent_name}")
         self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
-        self._log(f"watching dead-drop DB: {self.config.dead_drop_db}")
+        self._log(f"watching {self._comms_name()} DB: {self.config.dead_drop_db}")
         self._write_state("idle")
+
+        # Send self a boot message so ON STARTUP instructions in the system prompt fire
+        self._send_boot_message()
 
         try:
             while not self._stop_event.is_set():
@@ -252,52 +255,56 @@ class AgentDaemon:
         )
 
     def _build_rules_section(self) -> str:
+        comms = self._comms_name()
         lines = [
             "Autonomous daemon rules:",
             "- Do not use AskUserQuestion.",
-            "- Route questions to lead via dead-drop send.",
+            f"- Route questions to lead via {comms} send.",
             "- Execute exactly the incoming task.",
             "- Send one summary message when done.",
             "- Task governance: lead manages task queue and assignment ownership.",
-            "- No delegation without a written task file: `.dead-drop/tasks/<TASK-ID>/task.md` must exist first.",
         ]
 
         if self.agent_cfg.role == "lead":
             lines.extend(
                 [
-                    "- As lead: create and maintain task templates (task.md/status/assigned).",
+                    "- As lead: create and maintain tasks.",
                     "- As lead: define scope and acceptance criteria.",
                     "- As lead: ask domain owners to update technical details based on direct work.",
-                    "- As lead: capture new ideas in `.dead-drop/BACKLOG.md` before delegating.",
-                    "- As lead: after a task completes, review backlog and assign the next written task.",
+                    "- As lead: after a task completes, review and assign the next task.",
                 ]
             )
         else:
             lines.extend(
                 [
-                    "- Non-lead agents: do not rewrite full task templates owned by lead.",
-                    "- Non-lead agents: update technical details/results only where you have direct evidence.",
-                    "- If task structure should change, send recommendation to lead.",
-                    "- If you discover new ideas, send them to lead for backlog entry.",
+                    "- Non-lead agents: execute assigned tasks, report results.",
+                    "- If you discover new ideas, send them to lead.",
                 ]
             )
 
         return "\n".join(lines)
 
     def _build_protocol_section(self) -> str:
+        comms = self._comms_name()
         return "\n".join(
             [
                 "Mandatory pre-task protocol (all agents):",
-                "- Re-read the dead-drop protocol from your MCP onboarding/register output.",
-                "- Re-read `.dead-drop/debug-protocol.md` before starting task execution.",
-                "- Re-read `.dead-drop/BACKLOG.md` for current task and status context.",
+                f"- Use {comms} for all inter-agent communication.",
+                f"- Check inbox via {comms} check_inbox before starting work.",
+                f"- Send results via {comms} send when done.",
             ]
         )
+
+    def _comms_name(self) -> str:
+        """Derive the comms system name from the configured DB path."""
+        if "minion-comms" in str(self.config.dead_drop_db):
+            return "minion-comms"
+        return "dead-drop"
 
     def _build_incoming_section(self, message: DeadDropMessage, content: str) -> str:
         return "\n".join(
             [
-                "Incoming dead-drop message:",
+                "Incoming message:",
                 f"- id: {message.id}",
                 f"- from: {message.from_agent}",
                 f"- timestamp: {message.timestamp}",
@@ -564,6 +571,18 @@ class AgentDaemon:
             f"=== model-stream end: agent={self.agent_name} cmd={command_name} shown={displayed_chars} chars ===",
             flush=True,
         )
+
+    def _send_boot_message(self) -> None:
+        """Drop a self-addressed message so the agent's first turn fires immediately."""
+        try:
+            self.watcher.send_message(
+                self.agent_name,
+                self.agent_name,
+                "BOOT: You just started. Execute your ON STARTUP instructions now.",
+            )
+            self._log("sent boot message to self")
+        except Exception as exc:
+            self._log(f"failed to send boot message: {exc}")
 
     def _alert_lead(self) -> None:
         lead = self.watcher.find_lead_agent() or "lead"

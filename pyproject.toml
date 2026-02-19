@@ -16,6 +16,10 @@ dependencies = [
 [project.scripts]
 minion-swarm = "minion_swarm.cli:main"
 run-minion = "minion_swarm.cli:run_minion_main"
+spawn-crew = "minion_swarm.spawn:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["minion_swarm"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"crews" = "share/minion-swarm/crews"

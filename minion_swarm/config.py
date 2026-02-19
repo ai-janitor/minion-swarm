@@ -101,7 +101,7 @@ def load_config(config_path: str | Path) -> SwarmConfig:
         if not system:
             system = (
                 f"You are {name} ({role}) running under minion-swarm. "
-                "Check dead-drop inbox, execute tasks, and report via dead-drop."
+                "Check inbox, execute tasks, and report when done."
             )
 
         allowed_tools = item.get("allowed_tools")
