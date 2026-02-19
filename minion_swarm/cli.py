@@ -16,7 +16,7 @@ import yaml
 
 from .config import SwarmConfig, load_config
 from .daemon import AgentDaemon
-from .watcher import DeadDropWatcher
+from .watcher import CommsWatcher
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
@@ -106,8 +106,8 @@ def init_cmd(config_path: str, project_dir: Optional[str], overwrite_config: boo
     elif "project_dir" not in raw or not raw["project_dir"]:
         raw["project_dir"] = str(Path.cwd())
 
-    raw.setdefault("dead_drop_dir", ".dead-drop")
-    raw.setdefault("dead_drop_db", "~/.dead-drop/messages.db")
+    raw.setdefault("comms_dir", raw.pop("dead_drop_dir", ".dead-drop"))
+    raw.setdefault("comms_db", raw.pop("dead_drop_db", "~/.dead-drop/messages.db"))
 
     # Seed agents from example if missing
     if not isinstance(raw.get("agents"), dict) or not raw.get("agents"):
@@ -305,7 +305,7 @@ def send_cmd(to_agent: str, message: Iterable[str], config_path: str, from_agent
     if not payload:
         raise click.ClickException("Message cannot be empty")
 
-    watcher = DeadDropWatcher(from_agent, cfg.dead_drop_db)
+    watcher = CommsWatcher(from_agent, cfg.comms_db)
     msg_id = watcher.send_message(from_agent, to_agent, payload, cc=cc)
     click.echo(f"sent message id={msg_id} from={from_agent} to={to_agent}")
 

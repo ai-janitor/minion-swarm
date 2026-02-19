@@ -31,8 +31,8 @@ class AgentConfig:
 class SwarmConfig:
     config_path: Path
     project_dir: Path
-    dead_drop_dir: Path
-    dead_drop_db: Path
+    comms_dir: Path
+    comms_db: Path
     agents: Dict[str, AgentConfig]
 
     @property
@@ -74,10 +74,19 @@ def load_config(config_path: str | Path) -> SwarmConfig:
         raise ValueError("Top-level config must be a YAML mapping")
 
     project_dir = _resolve_path(str(raw.get("project_dir", cfg_path.parent)), cfg_path.parent)
-    dead_drop_dir = _resolve_path(str(raw.get("dead_drop_dir", ".dead-drop")), project_dir)
+    comms_dir = _resolve_path(
+        str(raw.get("comms_dir") or raw.get("dead_drop_dir", ".dead-drop")),
+        project_dir,
+    )
 
-    db_default = os.environ.get("DEAD_DROP_DB_PATH", "~/.dead-drop/messages.db")
-    dead_drop_db = _resolve_path(str(raw.get("dead_drop_db", db_default)), cfg_path.parent)
+    db_default = os.environ.get(
+        "MINION_SWARM_COMMS_DB",
+        os.environ.get("DEAD_DROP_DB_PATH", "~/.dead-drop/messages.db"),
+    )
+    comms_db = _resolve_path(
+        str(raw.get("comms_db") or raw.get("dead_drop_db", db_default)),
+        cfg_path.parent,
+    )
 
     agents_raw = raw.get("agents")
     if not isinstance(agents_raw, dict) or not agents_raw:
@@ -143,7 +152,7 @@ def load_config(config_path: str | Path) -> SwarmConfig:
     return SwarmConfig(
         config_path=cfg_path,
         project_dir=project_dir,
-        dead_drop_dir=dead_drop_dir,
-        dead_drop_db=dead_drop_db,
+        comms_dir=comms_dir,
+        comms_db=comms_db,
         agents=agents,
     )

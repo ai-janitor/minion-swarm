@@ -3,8 +3,8 @@
 # Usage: spawn-crew ff1 [project-dir]
 
 project_dir: .
-dead_drop_dir: .minion-comms
-dead_drop_db: ~/.minion-comms/messages.db
+comms_dir: .minion-comms
+comms_db: ~/.minion-comms/messages.db
 
 lead:
   name: redmage

@@ -1,6 +1,6 @@
 project_dir: /path/to/your/project
-dead_drop_dir: .dead-drop
-dead_drop_db: ~/.dead-drop/messages.db
+comms_dir: .dead-drop
+comms_db: ~/.dead-drop/messages.db
 
 agents:
   opus-engineer:

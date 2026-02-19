@@ -17,7 +17,7 @@ def utc_now_iso() -> str:
 
 
 @dataclass
-class DeadDropMessage:
+class CommsMessage:
     id: int
     from_agent: str
     to_agent: str
@@ -51,7 +51,7 @@ class _DbFileEventHandler(FileSystemEventHandler):
         self._signal_if_target(event.dest_path)
 
 
-class DeadDropWatcher:
+class CommsWatcher:
     def __init__(self, agent_name: str, db_path: Path, debounce_seconds: float = 0.5) -> None:
         self.agent_name = agent_name
         self.db_path = db_path.expanduser().resolve()
@@ -132,7 +132,7 @@ class DeadDropWatcher:
             ).fetchone()["c"]
         return int(direct) + int(broadcast)
 
-    def pop_next_message(self) -> Optional[DeadDropMessage]:
+    def pop_next_message(self) -> Optional[CommsMessage]:
         now = utc_now_iso()
         with self._connect() as conn:
             row = conn.execute(
@@ -166,7 +166,7 @@ class DeadDropWatcher:
                 )
                 return None
 
-            message = DeadDropMessage(
+            message = CommsMessage(
                 id=int(row["id"]),
                 from_agent=str(row["from_agent"]),
                 to_agent=str(row["to_agent"]),

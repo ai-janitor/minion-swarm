@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from .config import SwarmConfig
-from .watcher import DeadDropMessage, DeadDropWatcher
+from .watcher import CommsMessage, CommsWatcher
 
 MAX_CONSOLE_STREAM_CHARS = 12_000
 
@@ -62,7 +62,7 @@ class AgentDaemon:
         self.agent_cfg = config.agents[agent_name]
         self.agent_name = agent_name
 
-        self.watcher = DeadDropWatcher(agent_name, config.dead_drop_db)
+        self.watcher = CommsWatcher(agent_name, config.comms_db)
         self.buffer = RollingBuffer(self.agent_cfg.max_history_tokens)
 
         self.inject_history_next_turn = False
@@ -77,18 +77,22 @@ class AgentDaemon:
     def run(self) -> None:
         self.config.ensure_runtime_dirs()
         self.watcher.start()
-        self.watcher.register_agent(
-            role=self.agent_cfg.role,
-            description=f"minion-swarm daemon agent ({self.agent_cfg.zone})",
-            status="online",
-        )
+
+        # Only register directly in DB for dead-drop (matching schema).
+        # For minion-comms, the agent registers via MCP on its first turn.
+        if self._comms_name() == "dead-drop":
+            self.watcher.register_agent(
+                role=self.agent_cfg.role,
+                description=f"minion-swarm daemon agent ({self.agent_cfg.zone})",
+                status="online",
+            )
 
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
         self._log(f"starting daemon for {self.agent_name}")
         self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
-        self._log(f"watching {self._comms_name()} DB: {self.config.dead_drop_db}")
+        self._log(f"watching {self._comms_name()} DB: {self.config.comms_db}")
         self._write_state("idle")
 
         # Send self a boot message so ON STARTUP instructions in the system prompt fire
@@ -153,7 +157,7 @@ class AgentDaemon:
         self._log(f"received signal {signum}, shutting down")
         self._stop_event.set()
 
-    def _process_message(self, message: DeadDropMessage) -> bool:
+    def _process_message(self, message: CommsMessage) -> bool:
         prompt = self._build_prompt(message)
         result = self._run_agent(prompt)
 
@@ -172,7 +176,7 @@ class AgentDaemon:
         self.resume_ready = True
         return True
 
-    def _build_prompt(self, message: DeadDropMessage) -> str:
+    def _build_prompt(self, message: CommsMessage) -> str:
         max_prompt_chars = self.agent_cfg.max_prompt_chars
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
@@ -297,11 +301,11 @@ class AgentDaemon:
 
     def _comms_name(self) -> str:
         """Derive the comms system name from the configured DB path."""
-        if "minion-comms" in str(self.config.dead_drop_db):
+        if "minion-comms" in str(self.config.comms_db):
             return "minion-comms"
         return "dead-drop"
 
-    def _build_incoming_section(self, message: DeadDropMessage, content: str) -> str:
+    def _build_incoming_section(self, message: CommsMessage, content: str) -> str:
         return "\n".join(
             [
                 "Incoming message:",
