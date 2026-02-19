@@ -161,13 +161,19 @@ class AgentDaemon:
             self._log("daemon stopped")
 
     def _poll_inbox(self) -> bool:
-        """Run poll.sh as a subprocess. Returns True if messages found."""
+        """Run poll.sh as a subprocess. Returns True if messages found.
+        Sets stop_event if stand_down detected (exit code 3).
+        """
         try:
             proc = subprocess.run(
                 ["bash", str(POLL_SCRIPT), self.agent_name, "--interval", "5", "--timeout", "30"],
                 capture_output=True,
                 text=True,
             )
+            if proc.returncode == 3:
+                self._log("stand_down detected — leader dismissed the party")
+                self._stop_event.set()
+                return False
             return proc.returncode == 0
         except Exception as exc:
             self._log(f"poll.sh error: {exc}")
