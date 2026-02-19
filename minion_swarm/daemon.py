@@ -148,6 +148,9 @@ class AgentDaemon:
             self._log("Run: curl -sSL https://raw.githubusercontent.com/ai-janitor/minion-comms/main/scripts/install.sh | bash")
             return
 
+        # Reset stale HP from previous session
+        self._update_hp(0, 0, turn_input=0, turn_output=0)
+
         # Boot: invoke claude directly to run ON STARTUP instructions
         self._log("boot: invoking agent for ON STARTUP")
         self._write_state("working")
@@ -163,7 +166,10 @@ class AgentDaemon:
                 self._log(f"boot HP: {result.input_tokens // 1000}k/{ctx // 1000}k context, overhead≈{self._tool_overhead_tokens // 1000}k, prompt≈{prompt_tokens} tokens")
                 self._session_input_tokens += result.input_tokens
                 self._session_output_tokens += result.output_tokens
-                self._update_hp(self._session_input_tokens, self._session_output_tokens)
+                self._update_hp(
+                    self._session_input_tokens, self._session_output_tokens,
+                    turn_input=result.input_tokens, turn_output=result.output_tokens,
+                )
             self._log("boot: complete")
         else:
             self._log(f"boot: failed (exit {result.exit_code})")
@@ -292,7 +298,10 @@ class AgentDaemon:
         if result.input_tokens > 0 or result.output_tokens > 0:
             self._session_input_tokens += result.input_tokens
             self._session_output_tokens += result.output_tokens
-            self._update_hp(self._session_input_tokens, self._session_output_tokens)
+            self._update_hp(
+                self._session_input_tokens, self._session_output_tokens,
+                turn_input=result.input_tokens, turn_output=result.output_tokens,
+            )
 
         if result.compaction_detected:
             self.inject_history_next_turn = True
@@ -624,6 +633,10 @@ class AgentDaemon:
         t = threading.Thread(target=_reader, daemon=True)
         t.start()
 
+        # Raw stream log — full stream-json for context inspection
+        stream_log = self.config.logs_dir / f"{self.agent_name}.stream.jsonl"
+        stream_fp = open(stream_log, "a")
+
         timed_out = False
         compaction_detected = False
         last_output_at = time.monotonic()
@@ -649,6 +662,8 @@ class AgentDaemon:
 
             last_output_at = time.monotonic()
             self.buffer.append(line)
+            stream_fp.write(line)
+            stream_fp.flush()
             rendered, has_compaction = self._render_stream_line(line)
 
             # Extract token usage from stream-json (last value wins —
@@ -670,6 +685,8 @@ class AgentDaemon:
                 hidden_chars += len(rendered) - len(chunk)
             if has_compaction:
                 compaction_detected = True
+
+        stream_fp.close()
 
         if timed_out and proc.poll() is None:
             try:
@@ -828,26 +845,28 @@ class AgentDaemon:
 
         return total
 
-    def _update_hp(self, input_tokens: int, output_tokens: int) -> None:
+    def _update_hp(
+        self, input_tokens: int, output_tokens: int,
+        turn_input: int | None = None, turn_output: int | None = None,
+    ) -> None:
         """Call minion update-hp to write observed HP to SQLite."""
         # Use API-reported context window, fall back to 200k default
         limit = self._context_window if self._context_window > 0 else 200_000
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         env["MINION_CLASS"] = "lead"  # Daemon has permission to write HP
+        cmd = [
+            "minion", "update-hp",
+            "--agent", self.agent_name,
+            "--input-tokens", str(input_tokens),
+            "--output-tokens", str(output_tokens),
+            "--limit", str(limit),
+        ]
+        if turn_input is not None:
+            cmd.extend(["--turn-input", str(turn_input)])
+        if turn_output is not None:
+            cmd.extend(["--turn-output", str(turn_output)])
         try:
-            subprocess.run(
-                [
-                    "minion", "update-hp",
-                    "--agent", self.agent_name,
-                    "--input-tokens", str(input_tokens),
-                    "--output-tokens", str(output_tokens),
-                    "--limit", str(limit),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=env,
-            )
+            subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=env)
         except Exception as exc:
             self._log(f"update-hp failed: {exc}")
 
