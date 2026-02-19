@@ -109,13 +109,26 @@ def main(crew_name: str, project_dir: str) -> None:
             capture_output=True,
         )
 
+    # Write lead system prompt to a file (shell quoting is unreliable for multi-line prompts)
+    prompt_dir = config_dir / "prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    lead_prompt_file = prompt_dir / f"{crew_name}-{lead_name}.txt"
+    with open(lead_prompt_file, "w") as f:
+        f.write(lead_system)
+
+    # Clear old daemon logs
+    logs_dir = Path(project_dir) / ".minion-swarm" / "logs"
+    if logs_dir.is_dir():
+        for log_file in logs_dir.glob("*.log"):
+            log_file.write_text("")
+
     click.echo(f"=== Spawning {crew_name} crew ===")
     click.echo(f"Project: {project_dir}")
     click.echo()
 
     # Terminal 1: lead (interactive claude session)
     click.echo(f"[{lead_name}] Interactive claude session (lead)")
-    lead_cmd = f"cd {project_dir} && claude --dangerously-skip-permissions --system-prompt '{lead_system}'"
+    lead_cmd = f'cd {project_dir} && claude --dangerously-skip-permissions --system-prompt "$(cat {lead_prompt_file})"'
     _open_terminal(lead_name, lead_cmd)
 
     # Terminals 2-N: daemon agents with log tailing
@@ -123,6 +136,7 @@ def main(crew_name: str, project_dir: str) -> None:
         click.echo(f"[{agent}] Daemon + log tail")
         agent_cmd = (
             f"cd {project_dir} && "
+            f"echo '=== {agent} ===' && "
             f"minion-swarm start {agent} --config {crew_config} && "
             f"exec minion-swarm logs {agent} --config {crew_config} --lines 0"
         )

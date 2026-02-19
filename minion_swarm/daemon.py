@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from .config import SwarmConfig
-from .watcher import CommsMessage, CommsWatcher
 
 MAX_CONSOLE_STREAM_CHARS = 12_000
+
+POLL_SCRIPT = Path.home() / ".minion-comms" / "poll.sh"
 
 
 def utc_now_iso() -> str:
@@ -62,7 +63,6 @@ class AgentDaemon:
         self.agent_cfg = config.agents[agent_name]
         self.agent_name = agent_name
 
-        self.watcher = CommsWatcher(agent_name, config.comms_db)
         self.buffer = RollingBuffer(self.agent_cfg.max_history_tokens)
 
         self.inject_history_next_turn = False
@@ -74,91 +74,151 @@ class AgentDaemon:
         self.state_path = self.config.state_dir / f"{self.agent_name}.json"
         self.resume_ready = self._load_resume_ready()
 
+        # dead-drop mode still uses the watcher for backward compat
+        self._use_poll = self._comms_name() == "minion-comms"
+        self._watcher: Any = None
+
+    def _get_watcher(self) -> Any:
+        """Lazy-init watcher for dead-drop mode only."""
+        if self._watcher is None:
+            from .watcher import CommsWatcher
+            self._watcher = CommsWatcher(self.agent_name, self.config.comms_db)
+        return self._watcher
+
     def run(self) -> None:
         self.config.ensure_runtime_dirs()
-        self.watcher.start()
 
-        # Only register directly in DB for dead-drop (matching schema).
-        # For minion-comms, the agent registers via MCP on its first turn.
-        if self._comms_name() == "dead-drop":
-            self.watcher.register_agent(
-                role=self.agent_cfg.role,
-                description=f"minion-swarm daemon agent ({self.agent_cfg.zone})",
-                status="online",
-            )
+        if self._use_poll:
+            self._run_poll_mode()
+        else:
+            self._run_watcher_mode()
 
+    def _run_poll_mode(self) -> None:
+        """minion-comms mode: poll.sh + claude invocations. No direct DB access."""
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
         self._log(f"starting daemon for {self.agent_name}")
         self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
-        self._log(f"watching {self._comms_name()} DB: {self.config.comms_db}")
+        self._log(f"mode: poll ({POLL_SCRIPT})")
         self._write_state("idle")
 
-        # Send self a boot message so ON STARTUP instructions in the system prompt fire
-        self._send_boot_message()
+        if not POLL_SCRIPT.exists():
+            self._log(f"ERROR: poll.sh not found at {POLL_SCRIPT}")
+            self._log("Run: curl -sSL https://raw.githubusercontent.com/ai-janitor/minion-comms/main/scripts/install.sh | bash")
+            return
+
+        # Boot: invoke claude directly to run ON STARTUP instructions
+        self._log("boot: invoking agent for ON STARTUP")
+        self._write_state("working")
+        boot_prompt = self._build_boot_prompt()
+        result = self._run_agent(boot_prompt)
+        if result.exit_code == 0:
+            self.resume_ready = True
+            self._log("boot: complete")
+        else:
+            self._log(f"boot: failed (exit {result.exit_code})")
+
+        self._write_state("idle")
 
         try:
             while not self._stop_event.is_set():
-                message = self.watcher.pop_next_message()
+                # Block until poll.sh says there are messages
+                self._log("polling for messages...")
+                has_messages = self._poll_inbox()
 
-                if message is None:
-                    self.watcher.set_agent_status("idle")
-                    self._write_state("idle")
-                    self.watcher.wait_for_update(timeout=5.0)
+                if self._stop_event.is_set():
+                    break
+
+                if not has_messages:
                     continue
 
-                self.watcher.set_agent_status("working")
-                self._write_state(
-                    "working",
-                    current_message_id=message.id,
-                    from_agent=message.from_agent,
-                    received_at=message.timestamp,
-                )
-                self._log(f"processing message {message.id} from {message.from_agent}")
+                # Messages available — invoke claude to process via MCP
+                self._write_state("working")
+                self._log("messages detected, invoking agent")
+                prompt = self._build_inbox_prompt()
+                ok = self._process_prompt(prompt)
 
-                ok = self._process_message(message)
                 if ok:
                     self.consecutive_failures = 0
                     self.last_error = None
-                    self.watcher.set_agent_status("online")
-                    self._write_state("idle", last_message_id=message.id)
-                    continue
-
-                self.consecutive_failures += 1
-                self._write_state(
-                    "error",
-                    failures=self.consecutive_failures,
-                    last_error=self.last_error,
-                    failed_message_id=message.id,
-                )
-
-                backoff = min(
-                    self.agent_cfg.retry_backoff_sec * (2 ** (self.consecutive_failures - 1)),
-                    self.agent_cfg.retry_backoff_max_sec,
-                )
-                self._log(
-                    f"failure #{self.consecutive_failures}; "
-                    f"backing off {backoff}s ({self.last_error or 'unknown error'})"
-                )
-
-                if self.consecutive_failures >= 3:
-                    self._alert_lead()
-
-                self._stop_event.wait(timeout=float(backoff))
-
+                    self._write_state("idle")
+                else:
+                    self.consecutive_failures += 1
+                    self._write_state(
+                        "error",
+                        failures=self.consecutive_failures,
+                        last_error=self.last_error,
+                    )
+                    backoff = min(
+                        self.agent_cfg.retry_backoff_sec * (2 ** (self.consecutive_failures - 1)),
+                        self.agent_cfg.retry_backoff_max_sec,
+                    )
+                    self._log(f"failure #{self.consecutive_failures}; backing off {backoff}s ({self.last_error or 'unknown'})")
+                    self._stop_event.wait(timeout=float(backoff))
         finally:
-            self.watcher.set_agent_status("offline")
             self._write_state("stopped")
-            self.watcher.stop()
             self._log("daemon stopped")
 
-    def _handle_signal(self, signum: int, _frame: Any) -> None:
-        self._log(f"received signal {signum}, shutting down")
-        self._stop_event.set()
+    def _poll_inbox(self) -> bool:
+        """Run poll.sh as a subprocess. Returns True if messages found."""
+        try:
+            proc = subprocess.run(
+                ["bash", str(POLL_SCRIPT), self.agent_name, "--interval", "5", "--timeout", "30"],
+                capture_output=True,
+                text=True,
+            )
+            return proc.returncode == 0
+        except Exception as exc:
+            self._log(f"poll.sh error: {exc}")
+            self._stop_event.wait(timeout=5.0)
+            return False
 
-    def _process_message(self, message: CommsMessage) -> bool:
-        prompt = self._build_prompt(message)
+    def _build_boot_prompt(self) -> str:
+        """Prompt for the first invocation — agent registers and sets up."""
+        system_section = self.agent_cfg.system.strip()
+        protocol_section = self._build_protocol_section()
+        rules_section = self._build_rules_section()
+        boot_section = "BOOT: You just started. Execute your ON STARTUP instructions now."
+        return "\n\n".join([system_section, protocol_section, rules_section, boot_section])
+
+    def _build_inbox_prompt(self) -> str:
+        """Prompt to check inbox and process messages via MCP."""
+        # Strip ON STARTUP block from system prompt — boot already ran it.
+        # Including it causes the agent to re-register and re-check_inbox
+        # on every invocation, which can create message loops.
+        system_section = self._strip_on_startup(self.agent_cfg.system.strip())
+        protocol_section = self._build_protocol_section()
+        rules_section = self._build_rules_section()
+
+        sections: List[str] = [system_section, protocol_section]
+
+        if self.inject_history_next_turn and len(self.buffer) > 0:
+            sections.append(self._build_history_block(self.buffer.snapshot()))
+            self.inject_history_next_turn = False
+
+        inbox_section = (
+            "You have new messages. Check your minion-comms inbox "
+            "(check_inbox), read and process all messages, then send "
+            "results via minion-comms send when done. "
+            "Do NOT re-register — you are already registered."
+        )
+        sections.extend([rules_section, inbox_section])
+        return "\n\n".join(s for s in sections if s.strip())
+
+    @staticmethod
+    def _strip_on_startup(text: str) -> str:
+        """Remove ON STARTUP block from system prompt for subsequent invocations."""
+        import re
+        # Match "ON STARTUP ..." through to the next blank line or end of string
+        return re.sub(
+            r"ON STARTUP[^\n]*\n(?:[ \t]+\d+\..*\n)*(?:[ \t]+Then .*\n?)?",
+            "",
+            text,
+        ).strip()
+
+    def _process_prompt(self, prompt: str) -> bool:
+        """Run the agent with a prompt and handle the result."""
         result = self._run_agent(prompt)
 
         if result.compaction_detected:
@@ -176,87 +236,135 @@ class AgentDaemon:
         self.resume_ready = True
         return True
 
-    def _build_prompt(self, message: CommsMessage) -> str:
+    # ── dead-drop backward compat ──────────────────────────────────────────
+
+    def _run_watcher_mode(self) -> None:
+        """Legacy dead-drop mode: direct DB watcher."""
+        watcher = self._get_watcher()
+        watcher.start()
+        watcher.register_agent(
+            role=self.agent_cfg.role,
+            description=f"minion-swarm daemon agent ({self.agent_cfg.zone})",
+            status="online",
+        )
+
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+
+        self._log(f"starting daemon for {self.agent_name}")
+        self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
+        self._log(f"mode: watcher (dead-drop DB: {self.config.comms_db})")
+        self._write_state("idle")
+
+        try:
+            while not self._stop_event.is_set():
+                message = watcher.pop_next_message()
+
+                if message is None:
+                    watcher.set_agent_status("idle")
+                    self._write_state("idle")
+                    watcher.wait_for_update(timeout=5.0)
+                    continue
+
+                watcher.set_agent_status("working")
+                self._write_state(
+                    "working",
+                    current_message_id=message.id,
+                    from_agent=message.from_agent,
+                    received_at=message.timestamp,
+                )
+                self._log(f"processing message {message.id} from {message.from_agent}")
+
+                prompt = self._build_watcher_prompt(message)
+                ok = self._process_prompt(prompt)
+
+                if ok:
+                    watcher.set_agent_status("online")
+                    self._write_state("idle", last_message_id=message.id)
+                    continue
+
+                self._write_state(
+                    "error",
+                    failures=self.consecutive_failures,
+                    last_error=self.last_error,
+                    failed_message_id=message.id,
+                )
+
+                backoff = min(
+                    self.agent_cfg.retry_backoff_sec * (2 ** (self.consecutive_failures - 1)),
+                    self.agent_cfg.retry_backoff_max_sec,
+                )
+                self._log(f"failure #{self.consecutive_failures}; backing off {backoff}s ({self.last_error or 'unknown'})")
+
+                if self.consecutive_failures >= 3:
+                    self._alert_lead_watcher(watcher)
+
+                self._stop_event.wait(timeout=float(backoff))
+
+        finally:
+            watcher.set_agent_status("offline")
+            self._write_state("stopped")
+            watcher.stop()
+            self._log("daemon stopped")
+
+    def _build_watcher_prompt(self, message: Any) -> str:
+        """Build prompt with message content baked in (dead-drop mode)."""
         max_prompt_chars = self.agent_cfg.max_prompt_chars
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
         rules_section = self._build_rules_section()
-        incoming_section = self._build_incoming_section(message, message.content)
+        incoming_section = self._build_incoming_section(message)
 
         sections: List[str] = [system_section, protocol_section]
-        used_history = False
 
         if self.inject_history_next_turn and len(self.buffer) > 0:
-            history_block = self._build_history_block(self.buffer.snapshot())
-            sections.append(history_block)
-            used_history = True
+            sections.append(self._build_history_block(self.buffer.snapshot()))
             self.inject_history_next_turn = False
 
         sections.extend([rules_section, incoming_section])
         prompt = "\n\n".join(s for s in sections if s.strip())
-        if len(prompt) <= max_prompt_chars:
-            return prompt
 
-        # First shrink/remove injected history; keep system + rules + incoming task intact.
-        if used_history:
-            base_without_history = "\n\n".join([system_section, protocol_section, rules_section, incoming_section])
-            history_budget = max_prompt_chars - len(base_without_history) - len(self._build_history_block(""))
-
-            if history_budget > 0:
-                trimmed_snapshot = self._truncate_tail(
-                    self.buffer.snapshot(),
-                    history_budget,
-                    "[history truncated to fit prompt budget]\n",
-                )
-                trimmed_history = self._build_history_block(trimmed_snapshot)
-                prompt = "\n\n".join([system_section, protocol_section, trimmed_history, rules_section, incoming_section])
-                if len(prompt) <= max_prompt_chars:
-                    self._log(
-                        f"trimmed injected history for prompt budget ({len(prompt)}/{max_prompt_chars} chars)"
-                    )
-                    return prompt
-
-            prompt = "\n\n".join([system_section, protocol_section, rules_section, incoming_section])
-            self._log("dropped injected history block due to prompt budget pressure")
-            if len(prompt) <= max_prompt_chars:
-                return prompt
-
-        # Last resort: trim only the message content body, preserving metadata and rules.
-        incoming_empty = self._build_incoming_section(message, "")
-        base_no_content = "\n\n".join([system_section, protocol_section, rules_section, incoming_empty])
-        content_budget = max_prompt_chars - len(base_no_content)
-        if content_budget < 0:
-            content_budget = 0
-
-        trimmed_content = self._truncate_tail(
-            message.content,
-            content_budget,
-            "[message truncated to fit prompt budget]\n",
-        )
-        prompt = "\n\n".join(
-            [system_section, protocol_section, rules_section, self._build_incoming_section(message, trimmed_content)]
-        )
         if len(prompt) > max_prompt_chars:
             prompt = prompt[:max_prompt_chars]
-            self._log("hard-truncated prompt to max_prompt_chars as final safety guard")
-        else:
-            self._log(
-                f"trimmed incoming message content for prompt budget ({len(prompt)}/{max_prompt_chars} chars)"
-            )
+            self._log("hard-truncated prompt to max_prompt_chars")
 
         return prompt
 
-    def _build_history_block(self, history_snapshot: str) -> str:
+    def _build_incoming_section(self, message: Any) -> str:
         return "\n".join(
             [
-                "════════════════════ RECENT HISTORY (rolling buffer) ════════════════════",
-                "The following is your captured stream-json history from before compaction.",
-                "Use it to restore recent context and avoid redoing completed work.",
-                "══════════════════════════════════════════════════════════════════════════",
-                history_snapshot,
-                "═══════════════════════ END RECENT HISTORY ═════════════════════════════",
+                "Incoming message:",
+                f"- id: {message.id}",
+                f"- from: {message.from_agent}",
+                f"- timestamp: {message.timestamp}",
+                f"- broadcast: {message.is_broadcast}",
+                "",
+                message.content,
             ]
         )
+
+    def _alert_lead_watcher(self, watcher: Any) -> None:
+        lead = watcher.find_lead_agent() or "lead"
+        content = (
+            f"minion-swarm alert: agent {self.agent_name} has {self.consecutive_failures} "
+            f"consecutive failures. Last error: {self.last_error or 'unknown'}."
+        )
+        try:
+            watcher.send_message(self.agent_name, lead, content)
+            self._log(f"alerted lead '{lead}' about repeated failures")
+        except Exception as exc:
+            self._log(f"failed to alert lead '{lead}': {exc}")
+
+    # ── shared ─────────────────────────────────────────────────────────────
+
+    def _handle_signal(self, signum: int, _frame: Any) -> None:
+        self._log(f"received signal {signum}, shutting down")
+        self._stop_event.set()
+
+    def _comms_name(self) -> str:
+        if "minion-comms" in str(self.config.comms_db):
+            return "minion-comms"
+        return "dead-drop"
 
     def _build_rules_section(self) -> str:
         comms = self._comms_name()
@@ -299,22 +407,15 @@ class AgentDaemon:
             ]
         )
 
-    def _comms_name(self) -> str:
-        """Derive the comms system name from the configured DB path."""
-        if "minion-comms" in str(self.config.comms_db):
-            return "minion-comms"
-        return "dead-drop"
-
-    def _build_incoming_section(self, message: CommsMessage, content: str) -> str:
+    def _build_history_block(self, history_snapshot: str) -> str:
         return "\n".join(
             [
-                "Incoming message:",
-                f"- id: {message.id}",
-                f"- from: {message.from_agent}",
-                f"- timestamp: {message.timestamp}",
-                f"- broadcast: {message.is_broadcast}",
-                "",
-                content,
+                "════════════════════ RECENT HISTORY (rolling buffer) ════════════════════",
+                "The following is your captured stream-json history from before compaction.",
+                "Use it to restore recent context and avoid redoing completed work.",
+                "══════════════════════════════════════════════════════════════════════════",
+                history_snapshot,
+                "═══════════════════════ END RECENT HISTORY ═════════════════════════════",
             ]
         )
 
@@ -370,8 +471,12 @@ class AgentDaemon:
             "--output-format",
             "stream-json",
             "--verbose",
-            "--continue",
         ]
+        # Only use --continue in watcher mode (single agent per session).
+        # In poll mode, multiple agents share the project dir so --continue
+        # would resume the wrong agent's session.
+        if not self._use_poll:
+            cmd.append("--continue")
         if self.agent_cfg.allowed_tools:
             cmd.extend(["--allowed-tools", self.agent_cfg.allowed_tools])
         if self.agent_cfg.permission_mode:
@@ -422,20 +527,10 @@ class AgentDaemon:
             )
         except FileNotFoundError:
             self._log(f"command not found: {cmd[0]}")
-            return AgentRunResult(
-                exit_code=127,
-                timed_out=False,
-                compaction_detected=False,
-                command_name=cmd[0],
-            )
+            return AgentRunResult(exit_code=127, timed_out=False, compaction_detected=False, command_name=cmd[0])
         except Exception as exc:
             self._log(f"failed to launch {cmd[0]}: {exc}")
-            return AgentRunResult(
-                exit_code=127,
-                timed_out=False,
-                compaction_detected=False,
-                command_name=cmd[0],
-            )
+            return AgentRunResult(exit_code=127, timed_out=False, compaction_detected=False, command_name=cmd[0])
 
         q: "queue.Queue[Optional[str]]" = queue.Queue()
 
@@ -575,30 +670,6 @@ class AgentDaemon:
             f"=== model-stream end: agent={self.agent_name} cmd={command_name} shown={displayed_chars} chars ===",
             flush=True,
         )
-
-    def _send_boot_message(self) -> None:
-        """Drop a self-addressed message so the agent's first turn fires immediately."""
-        try:
-            self.watcher.send_message(
-                self.agent_name,
-                self.agent_name,
-                "BOOT: You just started. Execute your ON STARTUP instructions now.",
-            )
-            self._log("sent boot message to self")
-        except Exception as exc:
-            self._log(f"failed to send boot message: {exc}")
-
-    def _alert_lead(self) -> None:
-        lead = self.watcher.find_lead_agent() or "lead"
-        content = (
-            f"minion-swarm alert: agent {self.agent_name} has {self.consecutive_failures} "
-            f"consecutive failures. Last error: {self.last_error or 'unknown'}."
-        )
-        try:
-            self.watcher.send_message(self.agent_name, lead, content)
-            self._log(f"alerted lead '{lead}' about repeated failures")
-        except Exception as exc:  # pragma: no cover
-            self._log(f"failed to alert lead '{lead}': {exc}")
 
     def _load_resume_ready(self) -> bool:
         if not self.state_path.exists():
