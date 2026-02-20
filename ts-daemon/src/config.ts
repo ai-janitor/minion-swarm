@@ -1,6 +1,9 @@
 import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import yaml from "js-yaml";
+import { loadContract } from "./contracts.js";
+
+const configDefaults = loadContract("config-defaults");
 
 export interface AgentConfig {
   name: string;
@@ -83,11 +86,11 @@ export function loadConfig(configPath: string): SwarmConfig {
       allowedTools,
       permissionMode,
       model: item.model ? String(item.model) : undefined,
-      maxHistoryTokens: Number(item.max_history_tokens ?? 100_000),
-      maxPromptChars: Number(item.max_prompt_chars ?? 120_000),
-      noOutputTimeoutSec: Number(item.no_output_timeout_sec ?? 600),
-      retryBackoffSec: Number(item.retry_backoff_sec ?? 30),
-      retryBackoffMaxSec: Number(item.retry_backoff_max_sec ?? 300),
+      maxHistoryTokens: Number(item.max_history_tokens ?? configDefaults?.max_history_tokens ?? 100_000),
+      maxPromptChars: Number(item.max_prompt_chars ?? configDefaults?.max_prompt_chars ?? 120_000),
+      noOutputTimeoutSec: Number(item.no_output_timeout_sec ?? configDefaults?.no_output_timeout_sec ?? 600),
+      retryBackoffSec: Number(item.retry_backoff_sec ?? configDefaults?.retry_backoff_sec ?? 30),
+      retryBackoffMaxSec: Number(item.retry_backoff_max_sec ?? configDefaults?.retry_backoff_max_sec ?? 300),
     };
   }
 

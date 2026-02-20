@@ -14,7 +14,7 @@ export interface DaemonState {
 
 export function writeState(statePath: string, agent: string, status: string, extra: Record<string, unknown> = {}): void {
   mkdirSync(dirname(statePath), { recursive: true });
-  const payload: DaemonState = {
+  const state: DaemonState = {
     agent,
     pid: process.pid,
     status,
@@ -23,13 +23,24 @@ export function writeState(statePath: string, agent: string, status: string, ext
     resumeReady: false,
     ...extra,
   };
+  // Write snake_case keys to disk
+  const { agent: _a, pid, status: _s, updatedAt, consecutiveFailures, resumeReady, ...rest } = state;
+  const payload: Record<string, unknown> = {
+    agent: state.agent,
+    pid: state.pid,
+    status: state.status,
+    updated_at: updatedAt,
+    consecutive_failures: consecutiveFailures,
+    resume_ready: resumeReady,
+    ...rest,
+  };
   writeFileSync(statePath, JSON.stringify(payload, null, 2));
 }
 
 export function loadResumeReady(statePath: string): boolean {
   try {
     const data = JSON.parse(readFileSync(statePath, "utf8"));
-    return Boolean(data?.resume_ready || data?.resumeReady);
+    return Boolean(data?.resume_ready ?? data?.resumeReady);
   } catch {
     return false;
   }

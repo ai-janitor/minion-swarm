@@ -6,10 +6,11 @@ import type { SwarmConfig, AgentConfig } from "./config.js";
 import { RollingBuffer } from "./rolling-buffer.js";
 import { writeState, updateHp, log } from "./state.js";
 import { buildBootPrompt, buildInboxPrompt } from "./prompt.js";
+import { loadContract } from "./contracts.js";
 
 const MINION_CLI = "minion";
 const CLAUDE_EXECUTABLE = resolve(process.env.HOME || "~", ".local/bin/claude");
-const MAX_CONSOLE_CHARS = 12_000;
+const MAX_CONSOLE_CHARS = loadContract("config-defaults")?.max_console_stream_chars ?? 12_000;
 
 interface InvokeResult {
   sessionId: string;
@@ -78,10 +79,10 @@ export class AgentDaemon {
     // Main poll loop
     while (!this.stopRequested) {
       log(this.agentName, "polling for messages...");
-      const hasMessages = this.pollInbox();
+      const pollData = this.pollInbox();
 
       if (this.stopRequested) break;
-      if (!hasMessages) continue;
+      if (!pollData) continue;
 
       // Messages available — invoke agent
       this.writeState("working");
@@ -92,7 +93,7 @@ export class AgentDaemon {
         : undefined;
       if (historySnapshot) this.injectHistoryNextTurn = false;
 
-      const prompt = buildInboxPrompt(this.agentName, this.agent, historySnapshot);
+      const prompt = buildInboxPrompt(this.agentName, this.agent, pollData, historySnapshot);
       const result = await this.invoke(prompt);
 
       if (result.compactionDetected) {
@@ -125,25 +126,29 @@ export class AgentDaemon {
     log(this.agentName, "daemon stopped");
   }
 
-  /** Run `minion poll` as a subprocess. Returns true if messages found. */
-  private pollInbox(): boolean {
+  /** Run `minion poll` as a subprocess. Returns poll data or null. */
+  private pollInbox(): Record<string, any> | null {
     try {
-      execFileSync(MINION_CLI, ["poll", "--agent", this.agentName, "--interval", "5", "--timeout", "30"], {
+      const stdout = execFileSync(MINION_CLI, ["poll", "--agent", this.agentName, "--interval", "5", "--timeout", "30"], {
         encoding: "utf8",
         timeout: 60_000,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      return true; // exit 0 = messages or tasks waiting
+      try {
+        return JSON.parse(stdout);
+      } catch {
+        return {}; // exit 0 but unparseable — still means content available
+      }
     } catch (err: any) {
       const exitCode = err.status ?? 1;
       if (exitCode === 3) {
         log(this.agentName, "stand_down detected — leader dismissed the party");
         this.stopRequested = true;
-        return false;
+        return null;
       }
-      if (exitCode === 1) return false; // timeout, no messages
+      if (exitCode === 1) return null; // timeout, no messages
       log(this.agentName, `minion poll error (exit ${exitCode})`);
-      return false;
+      return null;
     }
   }
 
