@@ -10,14 +10,13 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from minion_comms.defaults import ENV_CLASS, ENV_DB_PATH, ENV_DOCS_DIR
 
 from .config import SwarmConfig
 
 MAX_CONSOLE_STREAM_CHARS = 12_000
-
-POLL_SCRIPT = Path.home() / ".minion-comms" / "poll.sh"
 
 # Claude Code system prompt + tool definitions token costs (approximate).
 # Each tool's JSON schema + description consumes context tokens.
@@ -114,12 +113,12 @@ class AgentDaemon:
         self.state_path = self.config.state_dir / f"{self.agent_name}.json"
         self.resume_ready = self._load_resume_ready()
 
-        # dead-drop mode still uses the watcher for backward compat
+        # watcher mode uses direct DB access for backward compat
         self._use_poll = self._comms_name() == "minion-comms"
         self._watcher: Any = None
 
     def _get_watcher(self) -> Any:
-        """Lazy-init watcher for dead-drop mode only."""
+        """Lazy-init watcher for legacy watcher mode only."""
         if self._watcher is None:
             from .watcher import CommsWatcher
             self._watcher = CommsWatcher(self.agent_name, self.config.comms_db)
@@ -140,13 +139,8 @@ class AgentDaemon:
 
         self._log(f"starting daemon for {self.agent_name}")
         self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
-        self._log(f"mode: poll ({POLL_SCRIPT})")
+        self._log("mode: poll (minion poll)")
         self._write_state("idle")
-
-        if not POLL_SCRIPT.exists():
-            self._log(f"ERROR: poll.sh not found at {POLL_SCRIPT}")
-            self._log("Run: curl -sSL https://raw.githubusercontent.com/ai-janitor/minion-comms/main/scripts/install.sh | bash")
-            return
 
         # Reset stale HP from previous session
         self._update_hp(0, 0, turn_input=0, turn_output=0)
@@ -178,20 +172,20 @@ class AgentDaemon:
 
         try:
             while not self._stop_event.is_set():
-                # Block until poll.sh says there are messages
+                # Block until poll returns content (messages/tasks)
                 self._log("polling for messages...")
-                has_messages = self._poll_inbox()
+                poll_data = self._poll_inbox()
 
                 if self._stop_event.is_set():
                     break
 
-                if not has_messages:
+                if not poll_data:
                     continue
 
-                # Messages available — invoke claude to process via MCP
+                # Content available — invoke agent with messages/tasks inline
                 self._write_state("working")
                 self._log("messages detected, invoking agent")
-                prompt = self._build_inbox_prompt()
+                prompt = self._build_inbox_prompt(poll_data)
                 ok = self._process_prompt(prompt)
 
                 if ok:
@@ -215,31 +209,42 @@ class AgentDaemon:
             self._write_state("stopped")
             self._log("daemon stopped")
 
-    def _poll_inbox(self) -> bool:
-        """Run poll.sh as a subprocess. Returns True if messages found.
+    def _poll_inbox(self) -> Optional[Dict[str, Any]]:
+        """Run minion poll as a subprocess. Returns poll data dict or None.
         Sets stop_event if stand_down detected (exit code 3).
         """
         try:
+            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            env[ENV_DB_PATH] = str(self.config.comms_db)
+            env[ENV_DOCS_DIR] = str(self.config.docs_dir)
             proc = subprocess.run(
-                ["bash", str(POLL_SCRIPT), self.agent_name, "--interval", "5", "--timeout", "30"],
+                ["minion", "poll", "--agent", self.agent_name, "--interval", "5", "--timeout", "30"],
                 capture_output=True,
                 text=True,
+                env=env,
             )
             if proc.returncode == 3:
                 self._log("stand_down detected — leader dismissed the party")
                 self._stop_event.set()
-                return False
-            return proc.returncode == 0
+                return None
+            if proc.returncode == 0 and proc.stdout.strip():
+                try:
+                    return json.loads(proc.stdout.strip())
+                except json.JSONDecodeError:
+                    self._log(f"poll returned non-JSON: {proc.stdout[:200]}")
+                    return None
+            return None
         except Exception as exc:
-            self._log(f"poll.sh error: {exc}")
+            self._log(f"poll error: {exc}")
             self._stop_event.wait(timeout=5.0)
-            return False
+            return None
 
     def _build_boot_prompt(self) -> str:
         """Prompt for the first invocation — agent registers and sets up."""
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
         rules_section = self._build_rules_section()
+        provider_section = self._build_provider_section()
         role = self.agent_cfg.role or "coder"
         boot_section = "\n".join([
             "BOOT: You just started. Run these commands via the Bash tool:",
@@ -251,11 +256,15 @@ class AgentDaemon:
             "IMPORTANT: You are a daemon agent managed by minion-swarm.",
             "Do NOT run poll.sh — minion-swarm handles polling for you.",
             "Do NOT use AskUserQuestion — it blocks in headless mode.",
+            "After running these 4 commands, STOP. Do not do anything else.",
         ])
-        return "\n\n".join([system_section, protocol_section, rules_section, boot_section])
+        sections = [system_section, protocol_section, rules_section, boot_section]
+        if provider_section:
+            sections.insert(0, provider_section)
+        return "\n\n".join(sections)
 
-    def _build_inbox_prompt(self) -> str:
-        """Prompt to check inbox and process messages via CLI."""
+    def _build_inbox_prompt(self, poll_data: Dict[str, Any]) -> str:
+        """Prompt with messages/tasks already inline — no need to fetch."""
         # Strip ON STARTUP block from system prompt — boot already ran it.
         # Including it causes the agent to re-register and re-check_inbox
         # on every invocation, which can create message loops.
@@ -263,20 +272,44 @@ class AgentDaemon:
         protocol_section = self._build_protocol_section()
         rules_section = self._build_rules_section()
 
-        sections: List[str] = [system_section, protocol_section]
+        provider_section = self._build_provider_section()
+        sections: List[str] = []
+        if provider_section:
+            sections.append(provider_section)
+        sections.extend([system_section, protocol_section])
 
         if self.inject_history_next_turn and len(self.buffer) > 0:
             sections.append(self._build_history_block(self.buffer.snapshot()))
             self.inject_history_next_turn = False
 
-        inbox_section = "\n".join([
-            "You have new messages. Run via Bash tool:",
-            f"  minion check-inbox --agent {self.agent_name}",
-            "Read and process all messages, then send results:",
+        # Paste messages inline — poll already consumed them from DB
+        inbox_lines: List[str] = []
+        messages = poll_data.get("messages", [])
+        if messages:
+            inbox_lines.append("=== INBOX (already consumed — do NOT run check-inbox) ===")
+            for msg in messages:
+                sender = msg.get("from_agent", "unknown")
+                content = msg.get("content", "")
+                inbox_lines.append(f"FROM {sender}: {content}")
+            inbox_lines.append("=== END INBOX ===")
+
+        tasks = poll_data.get("tasks", [])
+        if tasks:
+            inbox_lines.append("=== AVAILABLE TASKS ===")
+            for task in tasks:
+                inbox_lines.append(f"  Task #{task.get('task_id')}: {task.get('title')} [{task.get('status')}]")
+                if task.get("claim_cmd"):
+                    inbox_lines.append(f"    Claim: {task['claim_cmd']}")
+            inbox_lines.append("=== END TASKS ===")
+
+        inbox_lines.extend([
+            "",
+            "Process the above, then send results:",
             f"  minion send --from {self.agent_name} --to <recipient> --message '...'",
-            "Do NOT re-register — you are already registered.",
+            "Do NOT run check-inbox or re-register.",
         ])
-        sections.extend([rules_section, inbox_section])
+
+        sections.extend([rules_section, "\n".join(inbox_lines)])
         return "\n\n".join(s for s in sections if s.strip())
 
     @staticmethod
@@ -318,10 +351,10 @@ class AgentDaemon:
         self.resume_ready = True
         return True
 
-    # ── dead-drop backward compat ──────────────────────────────────────────
+    # ── legacy watcher mode ──────────────────────────────────────────────
 
     def _run_watcher_mode(self) -> None:
-        """Legacy dead-drop mode: direct DB watcher."""
+        """Legacy watcher mode: direct DB access."""
         watcher = self._get_watcher()
         watcher.start()
         watcher.register_agent(
@@ -335,7 +368,7 @@ class AgentDaemon:
 
         self._log(f"starting daemon for {self.agent_name}")
         self._log(f"provider: {self.agent_cfg.provider} (resume_ready={self.resume_ready})")
-        self._log(f"mode: watcher (dead-drop DB: {self.config.comms_db})")
+        self._log(f"mode: watcher (DB: {self.config.comms_db})")
         self._write_state("idle")
 
         try:
@@ -390,7 +423,7 @@ class AgentDaemon:
             self._log("daemon stopped")
 
     def _build_watcher_prompt(self, message: Any) -> str:
-        """Build prompt with message content baked in (dead-drop mode)."""
+        """Build prompt with message content baked in (watcher mode)."""
         max_prompt_chars = self.agent_cfg.max_prompt_chars
         system_section = self.agent_cfg.system.strip()
         protocol_section = self._build_protocol_section()
@@ -444,9 +477,10 @@ class AgentDaemon:
         self._stop_event.set()
 
     def _comms_name(self) -> str:
-        if "minion-comms" in str(self.config.comms_db):
+        db = str(self.config.comms_db)
+        if "minion-comms" in db or "minion_work" in db:
             return "minion-comms"
-        return "dead-drop"
+        return "legacy"
 
     def _build_rules_section(self) -> str:
         lines = [
@@ -477,7 +511,50 @@ class AgentDaemon:
 
         return "\n".join(lines)
 
+    def _build_provider_section(self) -> str:
+        """Provider-specific prompt guardrails."""
+        provider = self.agent_cfg.provider
+        name = self.agent_name
+
+        if provider == "gemini":
+            return "\n".join([
+                f"CRITICAL IDENTITY: You are {name}. Not gemini-benchmarker, not any other name. You are {name}.",
+                f"When running minion commands, always use --name {name} or --agent {name}. Never substitute another name.",
+                "",
+                "EXECUTION DISCIPLINE:",
+                "- Run ONLY the commands listed. Do not explore, search, or investigate on your own.",
+                "- After completing the listed commands, STOP. Do not look for tasks, read files, or take initiative.",
+                "- Wait for messages to arrive via the daemon polling loop. You will be invoked again when there is work.",
+                "- One response = one task. No chaining, no speculative exploration.",
+            ])
+
+        if provider == "codex":
+            return "\n".join([
+                f"You are {name}. Run only the commands listed, then stop.",
+                "Do not explore the codebase or take initiative beyond the task.",
+            ])
+
+        if provider == "opencode":
+            return "\n".join([
+                f"You are {name}. Run only the commands listed, then stop.",
+                "Do not explore the codebase or take initiative beyond the task.",
+            ])
+
+        # Claude follows instructions well — minimal guardrails needed
+        return ""
+
     def _build_protocol_section(self) -> str:
+        """Read protocol-common.md + protocol-{role}.md, fallback to hardcoded."""
+        protocol_dir = self.config.docs_dir
+        role = self.agent_cfg.role or "coder"
+        sections: List[str] = []
+        for fname in ["protocol-common.md", f"protocol-{role}.md"]:
+            doc = protocol_dir / fname
+            if doc.exists():
+                sections.append(doc.read_text().strip())
+        if sections:
+            return "\n\n".join(sections)
+        # Fallback if protocol docs not installed
         name = self.agent_name
         return "\n".join(
             [
@@ -574,6 +651,8 @@ class AgentDaemon:
         if use_resume:
             cmd.extend(["resume", "--last"])
         cmd.append("--json")
+        if self.agent_cfg.permission_mode == "bypassPermissions":
+            cmd.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
         if self.agent_cfg.model:
             cmd.extend(["--model", self.agent_cfg.model])
         cmd.append(prompt)
@@ -592,6 +671,14 @@ class AgentDaemon:
         cmd = ["gemini", "--prompt", prompt, "--output-format", "stream-json"]
         if use_resume:
             cmd.extend(["--resume", "latest"])
+        if self.agent_cfg.permission_mode:
+            # Map Claude permission modes to gemini --approval-mode
+            mode_map = {"bypassPermissions": "yolo", "acceptEdits": "auto_edit", "plan": "plan"}
+            gemini_mode = mode_map.get(self.agent_cfg.permission_mode, self.agent_cfg.permission_mode)
+            cmd.extend(["--approval-mode", gemini_mode])
+        if self.agent_cfg.allowed_tools:
+            for tool in self.agent_cfg.allowed_tools.replace(",", " ").split():
+                cmd.extend(["--allowed-tools", tool])
         if self.agent_cfg.model:
             cmd.extend(["--model", self.agent_cfg.model])
         return cmd
@@ -602,7 +689,9 @@ class AgentDaemon:
 
         # Strip CLAUDECODE env var so nested claude sessions don't refuse to start
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["MINION_CLASS"] = self.agent_cfg.role or "coder"
+        env[ENV_CLASS] = self.agent_cfg.role or "coder"
+        env[ENV_DB_PATH] = str(self.config.comms_db)
+        env[ENV_DOCS_DIR] = str(self.config.docs_dir)
 
         try:
             proc = subprocess.Popen(
@@ -853,7 +942,9 @@ class AgentDaemon:
         # Use API-reported context window, fall back to 200k default
         limit = self._context_window if self._context_window > 0 else 200_000
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["MINION_CLASS"] = "lead"  # Daemon has permission to write HP
+        env[ENV_CLASS] = "lead"  # Daemon has permission to write HP
+        env[ENV_DB_PATH] = str(self.config.comms_db)
+        env[ENV_DOCS_DIR] = str(self.config.docs_dir)
         cmd = [
             "minion", "update-hp",
             "--agent", self.agent_name,
