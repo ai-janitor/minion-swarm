@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from minion_comms.defaults import ENV_CLASS, ENV_DB_PATH, ENV_DOCS_DIR
 
 from .config import SwarmConfig
+from .providers import get_provider
 
 MAX_CONSOLE_STREAM_CHARS = 12_000
 
@@ -116,6 +117,11 @@ class AgentDaemon:
         # watcher mode uses direct DB access for backward compat
         self._use_poll = self._comms_name() == "minion-comms"
         self._watcher: Any = None
+
+        self._provider = get_provider(
+            self.agent_cfg.provider, self.agent_name, self.agent_cfg, self._use_poll,
+        )
+        self._error_log = self.config.logs_dir / f"{self.agent_name}.error.log"
 
     def _get_watcher(self) -> Any:
         """Lazy-init watcher for legacy watcher mode only."""
@@ -512,36 +518,8 @@ class AgentDaemon:
         return "\n".join(lines)
 
     def _build_provider_section(self) -> str:
-        """Provider-specific prompt guardrails."""
-        provider = self.agent_cfg.provider
-        name = self.agent_name
-
-        if provider == "gemini":
-            return "\n".join([
-                f"CRITICAL IDENTITY: You are {name}. Not gemini-benchmarker, not any other name. You are {name}.",
-                f"When running minion commands, always use --name {name} or --agent {name}. Never substitute another name.",
-                "",
-                "EXECUTION DISCIPLINE:",
-                "- Run ONLY the commands listed. Do not explore, search, or investigate on your own.",
-                "- After completing the listed commands, STOP. Do not look for tasks, read files, or take initiative.",
-                "- Wait for messages to arrive via the daemon polling loop. You will be invoked again when there is work.",
-                "- One response = one task. No chaining, no speculative exploration.",
-            ])
-
-        if provider == "codex":
-            return "\n".join([
-                f"You are {name}. Run only the commands listed, then stop.",
-                "Do not explore the codebase or take initiative beyond the task.",
-            ])
-
-        if provider == "opencode":
-            return "\n".join([
-                f"You are {name}. Run only the commands listed, then stop.",
-                "Do not explore the codebase or take initiative beyond the task.",
-            ])
-
-        # Claude follows instructions well — minimal guardrails needed
-        return ""
+        """Provider-specific prompt guardrails — delegated to provider module."""
+        return self._provider.prompt_guardrails()
 
     def _build_protocol_section(self) -> str:
         """Read protocol-common.md + protocol-{role}.md, fallback to hardcoded."""
@@ -591,28 +569,15 @@ class AgentDaemon:
         return f"{prefix}{text[-keep:]}"
 
     def _run_agent(self, prompt: str) -> AgentRunResult:
-        provider = self.agent_cfg.provider
-        if provider == "claude":
-            return self._run_command(self._build_claude_command(prompt))
-        if provider == "codex":
+        provider = self._provider
+        cmd = provider.build_command(prompt, use_resume=False)
+        if provider.supports_resume:
             return self._run_with_optional_resume(
-                resume_cmd=self._build_codex_command(prompt, use_resume=True),
-                fresh_cmd=self._build_codex_command(prompt, use_resume=False),
-                resume_label="codex resume --last",
+                resume_cmd=provider.build_command(prompt, use_resume=True),
+                fresh_cmd=cmd,
+                resume_label=provider.resume_label,
             )
-        if provider == "opencode":
-            return self._run_with_optional_resume(
-                resume_cmd=self._build_opencode_command(prompt, use_resume=True),
-                fresh_cmd=self._build_opencode_command(prompt, use_resume=False),
-                resume_label="opencode --continue",
-            )
-        if provider == "gemini":
-            return self._run_with_optional_resume(
-                resume_cmd=self._build_gemini_command(prompt, use_resume=True),
-                fresh_cmd=self._build_gemini_command(prompt, use_resume=False),
-                resume_label="gemini --resume latest",
-            )
-        raise ValueError(f"Unsupported provider: {provider}")
+        return self._run_command(cmd)
 
     def _run_with_optional_resume(self, resume_cmd: List[str], fresh_cmd: List[str], resume_label: str) -> AgentRunResult:
         if self.resume_ready:
@@ -623,65 +588,6 @@ class AgentDaemon:
             self._log(f"{resume_label} failed with exit {resumed.exit_code}; retrying without resume")
 
         return self._run_command(fresh_cmd)
-
-    def _build_claude_command(self, prompt: str) -> List[str]:
-        cmd = [
-            "claude",
-            "-p",
-            prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-        ]
-        # Only use --continue in watcher mode (single agent per session).
-        # In poll mode, multiple agents share the project dir so --continue
-        # would resume the wrong agent's session.
-        if not self._use_poll:
-            cmd.append("--continue")
-        if self.agent_cfg.allowed_tools:
-            cmd.extend(["--allowed-tools", self.agent_cfg.allowed_tools])
-        if self.agent_cfg.permission_mode:
-            cmd.extend(["--permission-mode", self.agent_cfg.permission_mode])
-        if self.agent_cfg.model:
-            cmd.extend(["--model", self.agent_cfg.model])
-        return cmd
-
-    def _build_codex_command(self, prompt: str, use_resume: bool) -> List[str]:
-        cmd = ["codex", "exec"]
-        if use_resume:
-            cmd.extend(["resume", "--last"])
-        cmd.append("--json")
-        if self.agent_cfg.permission_mode == "bypassPermissions":
-            cmd.extend(["-c", 'sandbox_permissions=["disk-full-read-access"]'])
-        if self.agent_cfg.model:
-            cmd.extend(["--model", self.agent_cfg.model])
-        cmd.append(prompt)
-        return cmd
-
-    def _build_opencode_command(self, prompt: str, use_resume: bool) -> List[str]:
-        cmd = ["opencode", "run", "--format", "json"]
-        if use_resume:
-            cmd.append("--continue")
-        if self.agent_cfg.model:
-            cmd.extend(["--model", self.agent_cfg.model])
-        cmd.append(prompt)
-        return cmd
-
-    def _build_gemini_command(self, prompt: str, use_resume: bool) -> List[str]:
-        cmd = ["gemini", "--prompt", prompt, "--output-format", "stream-json"]
-        if use_resume:
-            cmd.extend(["--resume", "latest"])
-        if self.agent_cfg.permission_mode:
-            # Map Claude permission modes to gemini --approval-mode
-            mode_map = {"bypassPermissions": "yolo", "acceptEdits": "auto_edit", "plan": "plan"}
-            gemini_mode = mode_map.get(self.agent_cfg.permission_mode, self.agent_cfg.permission_mode)
-            cmd.extend(["--approval-mode", gemini_mode])
-        if self.agent_cfg.allowed_tools:
-            for tool in self.agent_cfg.allowed_tools.replace(",", " ").split():
-                cmd.extend(["--allowed-tools", tool])
-        if self.agent_cfg.model:
-            cmd.extend(["--model", self.agent_cfg.model])
-        return cmd
 
     def _run_command(self, cmd: List[str]) -> AgentRunResult:
         self._log(f"exec: {cmd[0]} ({self.agent_cfg.provider})")
@@ -751,9 +657,12 @@ class AgentDaemon:
 
             last_output_at = time.monotonic()
             self.buffer.append(line)
-            stream_fp.write(line)
+            stream_fp.write(line)  # Full unfiltered line to stream log
             stream_fp.flush()
-            rendered, has_compaction = self._render_stream_line(line)
+
+            # Filter through provider before rendering (catches verbose errors)
+            filtered_line = self._provider.filter_log_line(line, self._error_log)
+            rendered, has_compaction = self._render_stream_line(filtered_line)
 
             # Extract token usage from stream-json (last value wins —
             # result event comes last with full totals including cache)
