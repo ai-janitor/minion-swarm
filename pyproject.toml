@@ -5,13 +5,17 @@ build-backend = "hatchling.build"
 [project]
 name = "minion-swarm"
 version = "0.1.0"
-description = "Autonomous multi-agent daemon runner coordinated through dead-drop"
+description = "Autonomous multi-agent daemon runner coordinated through minion-comms"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1.0",
+    "minion-comms",
     "PyYAML>=6.0",
     "watchdog>=4.0.0",
 ]
+
+[tool.uv.sources]
+minion-comms = { path = "../minion-commsv2", editable = true }
 
 [project.scripts]
 minion-swarm = "minion_swarm.cli:main"

@@ -106,8 +106,8 @@ def init_cmd(config_path: str, project_dir: Optional[str], overwrite_config: boo
     elif "project_dir" not in raw or not raw["project_dir"]:
         raw["project_dir"] = str(Path.cwd())
 
-    raw.setdefault("comms_dir", raw.pop("dead_drop_dir", ".dead-drop"))
-    raw.setdefault("comms_db", raw.pop("dead_drop_db", "~/.dead-drop/messages.db"))
+    raw.setdefault("comms_dir", raw.pop("dead_drop_dir", ".minion-comms"))
+    raw.setdefault("comms_db", raw.pop("dead_drop_db", None))
 
     # Seed agents from example if missing
     if not isinstance(raw.get("agents"), dict) or not raw.get("agents"):
@@ -117,11 +117,11 @@ def init_cmd(config_path: str, project_dir: Optional[str], overwrite_config: boo
         else:
             raise click.ClickException("No agents defined and no agents in example config")
 
-    # Inject system prompt lines for dead-drop protocol
-    protocol_line = "Re-read .dead-drop/debug-protocol.md and BACKLOG.md before every task."
+    # Inject system prompt lines for minion-comms protocol
+    protocol_line = "Re-read .minion-comms/debug-protocol.md and BACKLOG.md before every task."
     lead_policy_lines = [
-        "Never delegate work without a written task file in `.dead-drop/tasks/<TASK-ID>/task.md`.",
-        "Capture newly discovered ideas in `.dead-drop/BACKLOG.md`.",
+        "Never delegate work without a written task file in `.minion-comms/tasks/<TASK-ID>/task.md`.",
+        "Capture newly discovered ideas in `.minion-comms/BACKLOG.md`.",
         "After each completed task, check backlog and assign the next written task.",
     ]
 
@@ -134,7 +134,7 @@ def init_cmd(config_path: str, project_dir: Optional[str], overwrite_config: boo
             role = str(agent.get("role", "coder"))
             system = (
                 f"You are {name} ({role}) running under minion-swarm. "
-                "Check dead-drop inbox, execute tasks, and report via dead-drop."
+                "Check inbox, execute tasks, and report when done."
             )
 
         if "debug-protocol.md" not in system or "BACKLOG.md" not in system:
@@ -307,7 +307,7 @@ def logs_cmd(agent: str, config_path: str, lines: int, follow: bool) -> None:
 @click.option("--from-agent", default="lead", show_default=True)
 @click.option("--cc", default=None)
 def send_cmd(to_agent: str, message: Iterable[str], config_path: str, from_agent: str, cc: Optional[str]) -> None:
-    """Send a dead-drop message as lead (or any sender)."""
+    """Send a message as lead (or any sender)."""
     cfg = load_config(config_path)
 
     payload = " ".join(message).strip()

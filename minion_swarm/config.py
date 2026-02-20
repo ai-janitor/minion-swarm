@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Dict, Literal, Optional
 
 import yaml
+from minion_comms.defaults import (
+    DEFAULT_DOCS_DIR,
+    ENV_DB_PATH,
+    ENV_DOCS_DIR,
+    resolve_db_path,
+)
 
 ProviderName = Literal["claude", "codex", "opencode", "gemini"]
 
@@ -33,6 +39,7 @@ class SwarmConfig:
     project_dir: Path
     comms_dir: Path
     comms_db: Path
+    docs_dir: Path
     agents: Dict[str, AgentConfig]
 
     @property
@@ -75,16 +82,17 @@ def load_config(config_path: str | Path) -> SwarmConfig:
 
     project_dir = _resolve_path(str(raw.get("project_dir", cfg_path.parent)), cfg_path.parent)
     comms_dir = _resolve_path(
-        str(raw.get("comms_dir") or raw.get("dead_drop_dir", ".dead-drop")),
+        str(raw.get("comms_dir", ".minion-comms")),
         project_dir,
     )
 
-    db_default = os.environ.get(
-        "MINION_SWARM_COMMS_DB",
-        os.environ.get("DEAD_DROP_DB_PATH", "~/.dead-drop/messages.db"),
-    )
     comms_db = _resolve_path(
-        str(raw.get("comms_db") or raw.get("dead_drop_db", db_default)),
+        str(raw.get("comms_db", resolve_db_path())),
+        cfg_path.parent,
+    )
+
+    docs_dir = _resolve_path(
+        str(raw.get("docs_dir", os.environ.get(ENV_DOCS_DIR, DEFAULT_DOCS_DIR))),
         cfg_path.parent,
     )
 
@@ -154,5 +162,6 @@ def load_config(config_path: str | Path) -> SwarmConfig:
         project_dir=project_dir,
         comms_dir=comms_dir,
         comms_db=comms_db,
+        docs_dir=docs_dir,
         agents=agents,
     )

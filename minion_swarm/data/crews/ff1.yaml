@@ -3,7 +3,6 @@
 # Usage: spawn-crew ff1 [project-dir]
 
 project_dir: .
-comms_db: ~/.minion-comms/minion.db
 
 lead:
   name: redmage
@@ -83,7 +82,7 @@ agents:
   thief:
     role: recon
     zone: "External investigation"
-    provider: claude
+    provider: gemini
     permission_mode: bypassPermissions
     allowed_tools: "Read,Glob,Grep,Bash,WebSearch,WebFetch"
     system: |
